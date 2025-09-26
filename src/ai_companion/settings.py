@@ -8,14 +8,17 @@ class Settings(BaseSettings):
     ELEVENLABS_API_KEY: str
     ELEVENLABS_VOICE_ID: str
     TOGETHER_API_KEY: str
+    AZURE_OPENAI_API_KEY: str
+    AZURE_OPENAI_API_ENDPOINT: str
+    AZURE_OPENAI_API_VERSION: str
 
     QDRANT_API_KEY: str | None
     QDRANT_URL: str
     QDRANT_PORT: str = "6333"
     QDRANT_HOST: str | None = None
 
-    TEXT_MODEL_NAME: str = "llama-3.3-70b-versatile"
-    SMALL_TEXT_MODEL_NAME: str = "gemma2-9b-it"
+    TEXT_MODEL_NAME: str = "gpt-5-chat"
+    SMALL_TEXT_MODEL_NAME: str = "gpt-5-mini"
     STT_MODEL_NAME: str = "whisper-large-v3-turbo"
     TTS_MODEL_NAME: str = "eleven_flash_v2_5"
     TTI_MODEL_NAME: str = "black-forest-labs/FLUX.1-schnell-Free"

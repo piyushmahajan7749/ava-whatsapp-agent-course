@@ -3,6 +3,8 @@ import uuid
 from datetime import datetime
 from typing import List, Optional
 
+from langchain_openai import AzureChatOpenAI
+
 from ai_companion.core.prompts import MEMORY_ANALYSIS_PROMPT
 from ai_companion.modules.memory.long_term.vector_store import get_vector_store
 from ai_companion.settings import settings
@@ -27,11 +29,15 @@ class MemoryManager:
     def __init__(self):
         self.vector_store = get_vector_store()
         self.logger = logging.getLogger(__name__)
-        self.llm = ChatGroq(
-            model=settings.SMALL_TEXT_MODEL_NAME,
-            api_key=settings.GROQ_API_KEY,
-            temperature=0.1,
+        self.llm =  AzureChatOpenAI(
+            azure_deployment=settings.SMALL_TEXT_MODEL_NAME,
+            api_version=settings.AZURE_OPENAI_API_VERSION,
+            max_tokens=None,
+            timeout=None,
             max_retries=2,
+            temperature=1,
+            api_key=settings.AZURE_OPENAI_API_KEY,
+            azure_endpoint=settings.AZURE_OPENAI_API_ENDPOINT,
         ).with_structured_output(MemoryAnalysis)
 
     async def _analyze_memory(self, message: str) -> MemoryAnalysis:

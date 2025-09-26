@@ -1,7 +1,8 @@
 import re
 
 from langchain_core.output_parsers import StrOutputParser
-from langchain_groq import ChatGroq
+from langchain_openai import AzureChatOpenAI
+
 
 from ai_companion.modules.image.image_to_text import ImageToText
 from ai_companion.modules.image.text_to_image import TextToImage
@@ -9,11 +10,15 @@ from ai_companion.modules.speech import TextToSpeech
 from ai_companion.settings import settings
 
 
-def get_chat_model(temperature: float = 0.7):
-    return ChatGroq(
-        api_key=settings.GROQ_API_KEY,
-        model_name=settings.TEXT_MODEL_NAME,
-        temperature=temperature,
+def get_chat_model(temperature: float = 1):
+    return AzureChatOpenAI(
+        azure_deployment=settings.TEXT_MODEL_NAME,
+        api_version=settings.AZURE_OPENAI_API_VERSION,
+        max_tokens=None,
+        timeout=None,
+        max_retries=2,
+        api_key=settings.AZURE_OPENAI_API_KEY,
+        azure_endpoint=settings.AZURE_OPENAI_API_ENDPOINT,
     )
 
 
