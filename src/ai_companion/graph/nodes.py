@@ -17,6 +17,7 @@ from ai_companion.graph.utils.helpers import (
 from ai_companion.modules.memory.long_term.memory_manager import get_memory_manager
 from ai_companion.modules.schedules.context_generation import ScheduleContextGenerator
 from ai_companion.settings import settings
+from ai_companion.modules.pooja.data import find_pooja_by_text, format_pooja_context
 
 
 async def router_node(state: AICompanionState):
@@ -34,9 +35,18 @@ def context_injection_node(state: AICompanionState):
     return {"apply_activity": apply_activity, "current_activity": schedule_context}
 
 
+def pooja_injection_node(state: AICompanionState):
+    """Detect and inject relevant pooja context based on recent user messages."""
+    recent_text = " ".join([m.content for m in state["messages"][-3:]]) if state.get("messages") else ""
+    pooja = find_pooja_by_text(recent_text)
+    context = format_pooja_context(pooja) if pooja else ""
+    return {"pooja_context": context}
+
+
 async def conversation_node(state: AICompanionState, config: RunnableConfig):
     current_activity = ScheduleContextGenerator.get_current_activity()
     memory_context = state.get("memory_context", "")
+    pooja_context = state.get("pooja_context", "")
 
     chain = get_character_response_chain(state.get("summary", ""))
 
@@ -45,6 +55,7 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
             "messages": state["messages"],
             "current_activity": current_activity,
             "memory_context": memory_context,
+            "pooja_context": pooja_context,
         },
         config,
     )
@@ -54,6 +65,7 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
 async def image_node(state: AICompanionState, config: RunnableConfig):
     current_activity = ScheduleContextGenerator.get_current_activity()
     memory_context = state.get("memory_context", "")
+    pooja_context = state.get("pooja_context", "")
 
     chain = get_character_response_chain(state.get("summary", ""))
     text_to_image_module = get_text_to_image_module()
@@ -72,6 +84,7 @@ async def image_node(state: AICompanionState, config: RunnableConfig):
             "messages": updated_messages,
             "current_activity": current_activity,
             "memory_context": memory_context,
+            "pooja_context": pooja_context,
         },
         config,
     )
@@ -82,6 +95,7 @@ async def image_node(state: AICompanionState, config: RunnableConfig):
 async def audio_node(state: AICompanionState, config: RunnableConfig):
     current_activity = ScheduleContextGenerator.get_current_activity()
     memory_context = state.get("memory_context", "")
+    pooja_context = state.get("pooja_context", "")
 
     chain = get_character_response_chain(state.get("summary", ""))
     text_to_speech_module = get_text_to_speech_module()
@@ -91,6 +105,7 @@ async def audio_node(state: AICompanionState, config: RunnableConfig):
             "messages": state["messages"],
             "current_activity": current_activity,
             "memory_context": memory_context,
+            "pooja_context": pooja_context,
         },
         config,
     )

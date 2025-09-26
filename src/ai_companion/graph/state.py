@@ -22,3 +22,4 @@ class AICompanionState(MessagesState):
     current_activity: str
     apply_activity: bool
     memory_context: str
+    pooja_context: str
