@@ -40,6 +40,7 @@ async def whatsapp_handler(request: Request) -> Response:
 
     try:
         data = await request.json()
+        logger.debug("WA webhook payload keys: %s", list(data.keys()))
         change_value = data["entry"][0]["changes"][0]["value"]
         if "messages" in change_value:
             message = change_value["messages"][0]
@@ -48,6 +49,8 @@ async def whatsapp_handler(request: Request) -> Response:
 
             # Get user message and handle different message types
             content = ""
+            logger.info("Incoming message: type=%s from=%s", message.get("type"), from_number)
+
             if message["type"] == "audio":
                 content = await process_audio_message(message)
             elif message["type"] == "image":
@@ -69,8 +72,9 @@ async def whatsapp_handler(request: Request) -> Response:
             # Process message through the graph agent
             async with AsyncSqliteSaver.from_conn_string(settings.SHORT_TERM_MEMORY_DB_PATH) as short_term_memory:
                 graph = graph_builder.compile(checkpointer=short_term_memory)
+                logger.debug("Graph invoke: thread_id=%s", session_id)
                 await graph.ainvoke(
-                    {"messages": [HumanMessage(content=content)]},
+                    {"messages": [HumanMessage(content=content, additional_kwargs={"wa_type": message.get("type")})]},
                     {"configurable": {"thread_id": session_id}},
                 )
 
@@ -79,6 +83,8 @@ async def whatsapp_handler(request: Request) -> Response:
 
             workflow = output_state.values.get("workflow", "conversation")
             response_message = output_state.values["messages"][-1].content
+            attachment_image_path = output_state.values.get("attachment_image_path")
+            logger.info("Graph output: workflow=%s, response_preview='%s'", workflow, response_message[:200])
 
             # Handle different response types based on workflow
             if workflow == "audio":
@@ -90,7 +96,16 @@ async def whatsapp_handler(request: Request) -> Response:
                     image_data = f.read()
                 success = await send_response(from_number, response_message, "image", image_data)
             else:
-                success = await send_response(from_number, response_message, "text")
+                if attachment_image_path:
+                    try:
+                        with open(attachment_image_path, "rb") as f:
+                            image_data = f.read()
+                        success = await send_response(from_number, response_message, "image", image_data)
+                    except Exception:
+                        logger.exception("Failed to attach QR image; falling back to text")
+                        success = await send_response(from_number, response_message, "text")
+                else:
+                    success = await send_response(from_number, response_message, "text")
 
             if not success:
                 return Response(content="Failed to send message", status_code=500)
@@ -188,8 +203,7 @@ async def send_response(
             "text": {"body": response_text},
         }
 
-    print(headers)
-    print(json_data)
+    logger.debug("WA send payload headers=%s body=%s", headers, json_data)
 
     async with httpx.AsyncClient() as client:
         response = await client.post(

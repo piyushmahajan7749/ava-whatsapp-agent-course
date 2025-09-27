@@ -1,4 +1,5 @@
 import os
+import logging
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
@@ -18,6 +19,10 @@ from ai_companion.modules.memory.long_term.memory_manager import get_memory_mana
 from ai_companion.modules.schedules.context_generation import ScheduleContextGenerator
 from ai_companion.settings import settings
 from ai_companion.modules.pooja.data import find_pooja_by_text, format_pooja_context
+"""Conversation and workflow nodes."""
+
+
+logger = logging.getLogger(__name__)
 
 
 async def router_node(state: AICompanionState):
@@ -48,8 +53,17 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
     memory_context = state.get("memory_context", "")
     pooja_context = state.get("pooja_context", "")
 
+    # Begin grounded LLM path (policy short-circuit removed)
+    logger.debug(
+        "conversation_node: begin; messages=%d, has_memory=%s, has_pooja=%s",
+        len(state.get("messages", [])),
+        bool(memory_context),
+        bool(pooja_context),
+    )
+
     chain = get_character_response_chain(state.get("summary", ""))
 
+    logger.debug("conversation_node: invoking character chain")
     response = await chain.ainvoke(
         {
             "messages": state["messages"],
@@ -59,7 +73,18 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
         },
         config,
     )
-    return {"messages": AIMessage(content=response)}
+    logger.debug("conversation_node: character chain completed")
+
+    # If user asked for QR / payment options, attach image path hint for transport layer
+    lower_resp = response.lower() if isinstance(response, str) else str(response).lower()
+    attach_qr = any(k in lower_resp for k in ["qr", "upi", "payment options", "payment karna", "scan"]) or any(
+        k in (state["messages"][-1].content.lower() if state.get("messages") else "") for k in ["qr", "upi", "scan"]
+    )
+
+    out = {"messages": AIMessage(content=response)}
+    if attach_qr and getattr(settings, "UPI_QR_IMAGE_PATH", None):
+        out["attachment_image_path"] = settings.UPI_QR_IMAGE_PATH
+    return out
 
 
 async def image_node(state: AICompanionState, config: RunnableConfig):

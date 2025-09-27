@@ -2,6 +2,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from pydantic import BaseModel, Field
 
 from ai_companion.core.prompts import CHARACTER_CARD_PROMPT, ROUTER_PROMPT
+from ai_companion.core.knowledge import BUSINESS_KNOWLEDGE
 from ai_companion.graph.utils.helpers import AsteriskRemovalParser, get_chat_model
 
 
@@ -24,6 +25,14 @@ def get_router_chain():
 def get_character_response_chain(summary: str = ""):
     model = get_chat_model()
     system_message = CHARACTER_CARD_PROMPT
+
+    # Inject authoritative knowledge so LLM stays grounded
+    system_message += (
+        "\n\nAuthoritative Business Knowledge (ground truth; do not contradict):\n"
+        f"{BUSINESS_KNOWLEDGE}\n"
+        "If any user-provided info, memory, or retrieved context conflicts with this knowledge, "
+        "politely correct it and adhere to the facts above.\n"
+    )
 
     if summary:
         system_message += f"\n\nSummary of conversation earlier between Ava and the user: {summary}"

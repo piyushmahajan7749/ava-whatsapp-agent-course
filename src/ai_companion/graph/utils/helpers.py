@@ -42,3 +42,17 @@ def remove_asterisk_content(text: str) -> str:
 class AsteriskRemovalParser(StrOutputParser):
     def parse(self, text):
         return remove_asterisk_content(super().parse(text))
+
+
+def get_small_chat_model(temperature: float = 0):
+    """Return the small Azure OpenAI chat model (gpt-5-mini)."""
+    return AzureChatOpenAI(
+        azure_deployment=settings.SMALL_TEXT_MODEL_NAME,
+        api_version=settings.AZURE_OPENAI_API_VERSION,
+        max_tokens=None,
+        timeout=None,
+        max_retries=2,
+        api_key=settings.AZURE_OPENAI_API_KEY,
+        azure_endpoint=settings.AZURE_OPENAI_API_ENDPOINT,
+        temperature=temperature,
+    )
