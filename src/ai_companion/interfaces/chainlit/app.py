@@ -1,3 +1,4 @@
+import os
 from io import BytesIO
 
 import chainlit as cl
@@ -78,7 +79,20 @@ async def on_message(message: cl.Message):
         image = cl.Image(path=output_state.values["image_path"], display="inline")
         await cl.Message(content=response, elements=[image]).send()
     else:
-        await msg.send()
+        # Check if there's an attachment image (like QR code)
+        attachment_image_path = output_state.values.get("attachment_image_path")
+        if attachment_image_path:
+            try:
+                if os.path.exists(attachment_image_path):
+                    image = cl.Image(path=attachment_image_path, display="inline", name="QR Code")
+                    await cl.Message(content=msg.content, elements=[image]).send()
+                else:
+                    await msg.send()
+            except Exception as e:
+                cl.logger.warning(f"Failed to attach QR image: {e}")
+                await msg.send()
+        else:
+            await msg.send()
 
 
 @cl.on_audio_chunk

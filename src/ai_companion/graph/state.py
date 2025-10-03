@@ -13,13 +13,16 @@ class AICompanionState(MessagesState):
         audio_buffer (bytes): The audio buffer to be used for speech-to-text conversion.
         current_activity (str): The current activity of Ava based on the schedule.
         memory_context (str): The context of the memories to be injected into the character card.
+        payment_verified (bool): Whether the user has submitted a valid payment screenshot.
     """
 
     summary: str
     workflow: str
     audio_buffer: bytes
     image_path: str
+    attachment_image_path: str
     current_activity: str
     apply_activity: bool
     memory_context: str
     pooja_context: str
+    payment_verified: bool

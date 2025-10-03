@@ -18,7 +18,11 @@ from ai_companion.graph.utils.helpers import (
 )
 from ai_companion.modules.memory.long_term.memory_manager import get_memory_manager
 from ai_companion.modules.schedules.context_generation import ScheduleContextGenerator
-from ai_companion.modules.calendar.google_calendar_tools import get_calendar_tools
+from ai_companion.modules.calendar.google_calendar_tools import (
+    get_calendar_tools,
+    set_payment_verified,
+    get_payment_verified,
+)
 from ai_companion.settings import settings
 from ai_companion.modules.pooja.data import find_pooja_by_text, format_pooja_context
 """Conversation and workflow nodes."""
@@ -67,6 +71,56 @@ def pooja_injection_node(state: AICompanionState):
     pooja = find_pooja_by_text(recent_text)
     context = format_pooja_context(pooja) if pooja else ""
     return {"pooja_context": context}
+
+
+def payment_verification_node(state: AICompanionState, config: RunnableConfig):
+    """
+    Detect and verify payment screenshots from user images.
+    
+    Checks the last user message for payment-related keywords and image analysis.
+    If a payment screenshot is detected, sets payment_verified to True.
+    """
+    if not state.get("messages"):
+        return {}
+    
+    last_message = state["messages"][-1]
+    content_lower = last_message.content.lower() if last_message.content else ""
+    
+    # Check for payment screenshot indicators
+    payment_keywords = [
+        "payment screenshot",
+        "payment proof",
+        "paid",
+        "transaction",
+        "upi payment",
+        "payment successful",
+        "payment done",
+        "gpay",
+        "phonepe",
+        "paytm",
+        "₹",
+        "rupees",
+        "amount transferred",
+        "credited",
+        "debited",
+        "transfer"
+    ]
+    
+    # Check if message contains payment-related content
+    has_payment_keywords = any(keyword in content_lower for keyword in payment_keywords)
+    
+    # Check for image analysis indicating a payment screenshot
+    has_image_analysis = "[Image Analysis:" in last_message.content
+    
+    # Get thread_id from config
+    thread_id = config.get("configurable", {}).get("thread_id") if config else None
+    
+    if has_payment_keywords and has_image_analysis and thread_id:
+        logger.info(f"Payment screenshot detected and verified for thread {thread_id}")
+        set_payment_verified(thread_id, True)
+        return {"payment_verified": True}
+    
+    return {}
 
 
 async def conversation_node(state: AICompanionState, config: RunnableConfig):

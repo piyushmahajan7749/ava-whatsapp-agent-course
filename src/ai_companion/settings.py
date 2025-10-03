@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     SHORT_TERM_MEMORY_DB_PATH: str = "/app/data/memory.db"
 
     # Optional: path to a UPI QR image to share on request
-    UPI_QR_IMAGE_PATH: str | None = "img/upi_qr.png"
+    UPI_QR_IMAGE_PATH: str | None = "img/QrCode.jpeg"
 
 
 settings = Settings()

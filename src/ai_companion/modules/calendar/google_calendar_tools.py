@@ -5,11 +5,15 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
 from googleapiclient.errors import HttpError
 
 from ai_companion.modules.calendar.auth import get_calendar_service
 
 logger = logging.getLogger(__name__)
+
+# Global state holder for payment verification
+_payment_verification_state = {}
 
 
 @tool
@@ -101,7 +105,10 @@ def book_calendar_event(
     attendee_email: Annotated[str, "Email of the attendee (optional)"] = "",
 ) -> str:
     """
-    Book an event in the calendar.
+    Book an event in the calendar. IMPORTANT: Payment verification is required before booking.
+    
+    The user MUST send a payment screenshot before this tool can successfully book an appointment.
+    If payment has not been verified, this tool will return an error asking for payment proof.
     
     Args:
         start_time: The start time of the event in ISO format with timezone
@@ -111,9 +118,30 @@ def book_calendar_event(
         attendee_email: Email address of attendee to invite (optional)
     
     Returns:
-        A confirmation message with event details
+        A confirmation message with event details, or an error if payment not verified
     """
     logger.info(f"Booking event '{event_title}' from {start_time} to {end_time}")
+    
+    # Check payment verification status
+    # We'll use a simpler approach: check if payment verification was recorded
+    # The state will be set by the payment_verification_node
+    from langchain_core.runnables import RunnableConfig
+    config = RunnableConfig.get()
+    thread_id = config.get("configurable", {}).get("thread_id") if config else None
+    
+    payment_verified = _payment_verification_state.get(thread_id, False)
+    
+    if not payment_verified:
+        logger.warning(f"Booking attempt without payment verification for thread {thread_id}")
+        return (
+            "❌ Payment verification required before booking.\n\n"
+            "Please send a screenshot of your payment transaction first. "
+            "Once I verify your payment, I'll proceed with booking your appointment.\n\n"
+            "You can send the payment screenshot by uploading an image showing:\n"
+            "- Payment confirmation from UPI app (GPay, PhonePe, Paytm, etc.)\n"
+            "- Transaction details including amount and status\n"
+            "- Payment successful message"
+        )
     
     try:
         # Validate and normalize datetime format
@@ -198,3 +226,15 @@ def book_calendar_event(
 def get_calendar_tools():
     """Return a list of all calendar tools."""
     return [check_calendar_availability, book_calendar_event]
+
+
+def set_payment_verified(thread_id: str, verified: bool = True):
+    """Set payment verification status for a specific thread/user."""
+    global _payment_verification_state
+    _payment_verification_state[thread_id] = verified
+    logger.info(f"Payment verification set to {verified} for thread {thread_id}")
+
+
+def get_payment_verified(thread_id: str) -> bool:
+    """Check if payment has been verified for a specific thread/user."""
+    return _payment_verification_state.get(thread_id, False)

@@ -11,6 +11,7 @@ from ai_companion.graph.nodes import (
     audio_node,
     context_injection_node,
     pooja_injection_node,
+    payment_verification_node,
     conversation_node,
     image_node,
     memory_extraction_node,
@@ -31,6 +32,7 @@ def create_workflow_graph():
     graph_builder.add_node("router_node", router_node)
     graph_builder.add_node("context_injection_node", context_injection_node)
     graph_builder.add_node("pooja_injection_node", pooja_injection_node)
+    graph_builder.add_node("payment_verification_node", payment_verification_node)
     graph_builder.add_node("memory_injection_node", memory_injection_node)
     graph_builder.add_node("conversation_node", conversation_node)
     graph_builder.add_node("image_node", image_node)
@@ -48,7 +50,8 @@ def create_workflow_graph():
     # Then inject both context and memories
     graph_builder.add_edge("router_node", "context_injection_node")
     graph_builder.add_edge("context_injection_node", "pooja_injection_node")
-    graph_builder.add_edge("pooja_injection_node", "memory_injection_node")
+    graph_builder.add_edge("pooja_injection_node", "payment_verification_node")
+    graph_builder.add_edge("payment_verification_node", "memory_injection_node")
 
     # Then proceed to appropriate response node
     graph_builder.add_conditional_edges("memory_injection_node", select_workflow)
