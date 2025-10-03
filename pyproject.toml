@@ -25,6 +25,11 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "qdrant-client>=1.12.1",
     "sentence-transformers>=3.3.1",
+    "google-auth>=2.36.0",
+    "google-auth-oauthlib>=1.2.1",
+    "google-auth-httplib2>=0.2.0",
+    "google-api-python-client>=2.154.0",
+    "pytz>=2024.1",
 ]
 
 [tool.ruff]

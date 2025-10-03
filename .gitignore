@@ -324,3 +324,6 @@ src/ai_companion/modules/memory/short_term/*.db
 long_term_memory/
 short_term_memory/
 .langgraph_api/
+
+# Google Calendar OAuth tokens (contains user-specific credentials)
+token.json

@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.prebuilt import ToolNode
 
 from ai_companion.graph.state import AICompanionState
 from ai_companion.graph.utils.chains import (
@@ -17,6 +18,7 @@ from ai_companion.graph.utils.helpers import (
 )
 from ai_companion.modules.memory.long_term.memory_manager import get_memory_manager
 from ai_companion.modules.schedules.context_generation import ScheduleContextGenerator
+from ai_companion.modules.calendar.google_calendar_tools import get_calendar_tools
 from ai_companion.settings import settings
 from ai_companion.modules.pooja.data import find_pooja_by_text, format_pooja_context
 """Conversation and workflow nodes."""
@@ -26,8 +28,27 @@ logger = logging.getLogger(__name__)
 
 
 async def router_node(state: AICompanionState):
+    """
+    Route the conversation to appropriate workflow (conversation/image/audio).
+    
+    Filters out tool-related messages since router doesn't need them.
+    """
+    from langchain_core.messages import ToolMessage
+    
+    # Filter out tool calls and tool messages for the router
+    # Router only needs to see human messages and regular AI responses
+    messages_for_router = []
+    for msg in state["messages"][-settings.ROUTER_MESSAGES_TO_ANALYZE :]:
+        # Skip tool messages
+        if isinstance(msg, ToolMessage):
+            continue
+        # Skip AI messages that only contain tool calls (no actual text)
+        if isinstance(msg, AIMessage) and msg.tool_calls and not msg.content:
+            continue
+        messages_for_router.append(msg)
+    
     chain = get_router_chain()
-    response = await chain.ainvoke({"messages": state["messages"][-settings.ROUTER_MESSAGES_TO_ANALYZE :]})
+    response = await chain.ainvoke({"messages": messages_for_router})
     return {"workflow": response.response_type}
 
 
@@ -49,6 +70,13 @@ def pooja_injection_node(state: AICompanionState):
 
 
 async def conversation_node(state: AICompanionState, config: RunnableConfig):
+    """
+    Handle conversation with tool calling support.
+    
+    This node can either:
+    1. Generate a text response
+    2. Make tool calls (if user asks about calendar/scheduling)
+    """
     current_activity = ScheduleContextGenerator.get_current_activity()
     memory_context = state.get("memory_context", "")
     pooja_context = state.get("pooja_context", "")
@@ -61,9 +89,13 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
         bool(pooja_context),
     )
 
-    chain = get_character_response_chain(state.get("summary", ""))
+    # Enable tools for calendar-related queries
+    # You can make this smarter by detecting calendar intent in router if needed
+    enable_tools = True  # Always enable tools; LLM will decide when to use them
+    
+    chain = get_character_response_chain(state.get("summary", ""), enable_tools=enable_tools)
 
-    logger.debug("conversation_node: invoking character chain")
+    logger.debug("conversation_node: invoking character chain (tools_enabled=%s)", enable_tools)
     response = await chain.ainvoke(
         {
             "messages": state["messages"],
@@ -75,13 +107,29 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
     )
     logger.debug("conversation_node: character chain completed")
 
+    # Check if response contains tool calls
+    if isinstance(response, AIMessage) and response.tool_calls:
+        logger.info(f"Tool calls detected: {[tc['name'] for tc in response.tool_calls]}")
+        # Return the AIMessage with tool calls (tools_node will execute them)
+        return {"messages": [response]}
+    
+    # Regular text response handling
+    # When tools are enabled, response is always AIMessage
+    if isinstance(response, AIMessage):
+        response_text = response.content
+        # Return the AIMessage as-is to preserve message structure
+        out = {"messages": [response]}
+    else:
+        # When tools are disabled, response is a string
+        response_text = response
+        out = {"messages": [AIMessage(content=response_text)]}
+    
     # If user asked for QR / payment options, attach image path hint for transport layer
-    lower_resp = response.lower() if isinstance(response, str) else str(response).lower()
+    lower_resp = response_text.lower() if isinstance(response_text, str) else str(response_text).lower()
     attach_qr = any(k in lower_resp for k in ["qr", "upi", "payment options", "payment karna", "scan"]) or any(
         k in (state["messages"][-1].content.lower() if state.get("messages") else "") for k in ["qr", "upi", "scan"]
     )
 
-    out = {"messages": AIMessage(content=response)}
     if attach_qr and getattr(settings, "UPI_QR_IMAGE_PATH", None):
         out["attachment_image_path"] = settings.UPI_QR_IMAGE_PATH
     return out
@@ -184,3 +232,7 @@ def memory_injection_node(state: AICompanionState):
     memory_context = memory_manager.format_memories_for_prompt(memories)
 
     return {"memory_context": memory_context}
+
+
+# Create the tools node for executing tool calls
+tools_node = ToolNode(get_calendar_tools())

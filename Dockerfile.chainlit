@@ -22,6 +22,9 @@ RUN uv sync --frozen --no-cache
 # Copy your application code into the container
 COPY src/ /app/
 
+# Note: credentials.json and token.json are mounted as volumes in docker-compose.yml
+# This is more secure as they won't be baked into the image
+
 # Set the virtual environment environment variables
 ENV VIRTUAL_ENV=/app/.venv \
     PATH="/app/.venv/bin:$PATH"

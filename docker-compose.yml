@@ -20,8 +20,10 @@ services:
       - QDRANT_HOST=localhost
       - QDRANT_URL=http://qdrant:6333
     restart: unless-stopped
-    volumes: 
+    volumes:
       - ./short_term_memory:/app/data
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json
     depends_on:
       - qdrant
   whatsapp:
@@ -38,7 +40,7 @@ services:
       - QDRANT_HOST=localhost
       - QDRANT_URL=http://qdrant:6333
     restart: unless-stopped
-    volumes: 
+    volumes:
       - ./short_term_memory:/app/data
     depends_on:
       - qdrant
