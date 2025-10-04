@@ -14,9 +14,9 @@ def get_chat_model(temperature: float = 1):
     return AzureChatOpenAI(
         azure_deployment=settings.TEXT_MODEL_NAME,
         api_version=settings.AZURE_OPENAI_API_VERSION,
-        max_tokens=None,
-        timeout=None,
-        max_retries=2,
+        max_tokens=100,
+        timeout=60.0,  # 60 second timeout to prevent hanging
+        max_retries=3,  # Increased retries for flaky connections
         api_key=settings.AZURE_OPENAI_API_KEY,
         azure_endpoint=settings.AZURE_OPENAI_API_ENDPOINT,
     )
@@ -50,8 +50,8 @@ def get_small_chat_model(temperature: float = 0):
         azure_deployment=settings.SMALL_TEXT_MODEL_NAME,
         api_version=settings.AZURE_OPENAI_API_VERSION,
         max_tokens=None,
-        timeout=None,
-        max_retries=2,
+        timeout=60.0,  # 60 second timeout to prevent hanging
+        max_retries=3,  # Increased retries for flaky connections
         api_key=settings.AZURE_OPENAI_API_KEY,
         azure_endpoint=settings.AZURE_OPENAI_API_ENDPOINT,
         temperature=temperature,

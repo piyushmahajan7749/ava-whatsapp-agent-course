@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 async def router_node(state: AICompanionState):
     """
-    Route the conversation to appropriate workflow (conversation/image/audio).
+    Route the conversation to appropriate workflow (conversation/audio).
     
     Filters out tool-related messages since router doesn't need them.
     """

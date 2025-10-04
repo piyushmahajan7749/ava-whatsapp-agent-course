@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from io import BytesIO
 from typing import Dict
 
@@ -13,6 +14,14 @@ from ai_companion.modules.image import ImageToText
 from ai_companion.modules.speech import SpeechToText, TextToSpeech
 from ai_companion.settings import settings
 
+# Configure logging with detailed format
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Global module instances
@@ -26,6 +35,17 @@ whatsapp_router = APIRouter()
 # WhatsApp API credentials
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+
+# Log startup configuration
+logger.info("WhatsApp module initialized")
+logger.info(f"WHATSAPP_TOKEN configured: {bool(WHATSAPP_TOKEN)}")
+logger.info(f"WHATSAPP_PHONE_NUMBER_ID configured: {bool(WHATSAPP_PHONE_NUMBER_ID)}")
+logger.info(f"SHORT_TERM_MEMORY_DB_PATH: {settings.SHORT_TERM_MEMORY_DB_PATH}")
+
+if not WHATSAPP_TOKEN:
+    logger.error("WHATSAPP_TOKEN environment variable is not set!")
+if not WHATSAPP_PHONE_NUMBER_ID:
+    logger.error("WHATSAPP_PHONE_NUMBER_ID environment variable is not set!")
 
 
 @whatsapp_router.api_route("/whatsapp_response", methods=["GET", "POST"])
@@ -41,6 +61,12 @@ async def whatsapp_handler(request: Request) -> Response:
     try:
         data = await request.json()
         logger.debug("WA webhook payload keys: %s", list(data.keys()))
+        logger.debug("Full payload: %s", data)
+        
+        if "entry" not in data:
+            logger.error("Missing 'entry' in webhook payload")
+            return Response(content="Invalid payload structure", status_code=400)
+        
         change_value = data["entry"][0]["changes"][0]["value"]
         if "messages" in change_value:
             message = change_value["messages"][0]
@@ -70,16 +96,21 @@ async def whatsapp_handler(request: Request) -> Response:
                 content = message["text"]["body"]
 
             # Process message through the graph agent
-            async with AsyncSqliteSaver.from_conn_string(settings.SHORT_TERM_MEMORY_DB_PATH) as short_term_memory:
-                graph = graph_builder.compile(checkpointer=short_term_memory)
-                logger.debug("Graph invoke: thread_id=%s", session_id)
-                await graph.ainvoke(
-                    {"messages": [HumanMessage(content=content, additional_kwargs={"wa_type": message.get("type")})]},
-                    {"configurable": {"thread_id": session_id}},
-                )
+            try:
+                async with AsyncSqliteSaver.from_conn_string(settings.SHORT_TERM_MEMORY_DB_PATH) as short_term_memory:
+                    logger.info("Opening database connection to: %s", settings.SHORT_TERM_MEMORY_DB_PATH)
+                    graph = graph_builder.compile(checkpointer=short_term_memory)
+                    logger.debug("Graph invoke: thread_id=%s", session_id)
+                    await graph.ainvoke(
+                        {"messages": [HumanMessage(content=content, additional_kwargs={"wa_type": message.get("type")})]},
+                        {"configurable": {"thread_id": session_id}},
+                    )
 
-                # Get the workflow type and response from the state
-                output_state = await graph.aget_state(config={"configurable": {"thread_id": session_id}})
+                    # Get the workflow type and response from the state
+                    output_state = await graph.aget_state(config={"configurable": {"thread_id": session_id}})
+            except Exception as graph_error:
+                logger.error(f"Graph processing error: {type(graph_error).__name__}: {graph_error}", exc_info=True)
+                raise
 
             workflow = output_state.values.get("workflow", "conversation")
             response_message = output_state.values["messages"][-1].content
@@ -118,9 +149,14 @@ async def whatsapp_handler(request: Request) -> Response:
         else:
             return Response(content="Unknown event type", status_code=400)
 
+    except KeyError as e:
+        logger.error(f"Missing key in payload: {e}", exc_info=True)
+        return Response(content=f"Invalid payload structure: {e}", status_code=400)
     except Exception as e:
-        logger.error(f"Error processing message: {e}", exc_info=True)
-        return Response(content="Internal server error", status_code=500)
+        logger.error(f"Error processing message: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"Error type: {type(e)}")
+        logger.error(f"Error details: {str(e)}")
+        return Response(content=f"Internal server error: {type(e).__name__}", status_code=500)
 
 
 async def download_media(media_id: str) -> bytes:

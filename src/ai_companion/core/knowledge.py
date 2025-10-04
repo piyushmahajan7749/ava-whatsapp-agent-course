@@ -5,6 +5,7 @@ KALAWA_PRICE_INR = 2100
 BOOKING_LINK = "https://www.upaai.in/hi/booking"
 KALAWA_PRODUCT_LINK = "https://www.upaai.in/product/apamargJadKalawa"
 POOJA_LIST_LINK = "https://www.upaai.in/hi/poojalist"
+QR_CODE_LINK = "https://www.upaai.in/qrcode.jpeg"
 
 BUSINESS_KNOWLEDGE = f"""
 - Consultation charge: ₹{CONSULTATION_PRICE_INR}
@@ -14,6 +15,7 @@ BUSINESS_KNOWLEDGE = f"""
 - Direct in‑person meetings are not directly bookable. First a consultation call is required; if Guru Maa deems face‑to‑face necessary, she will guide it herself. UMA handles consultation, products, and pooja bookings only. Meeting decisions are at Guru Maa's discretion.
 - Payment‑first policy: appointment/booking is confirmed only after payment; this applies to all customers. Once payment is received, the slot is confirmed.
 - Payment options: UPI via QR code, or website booking at {BOOKING_LINK}. After payment, share the payment screenshot and provide full name and date of birth to complete booking.
+- QR code link: {QR_CODE_LINK}
 - Appointment availability: typically the next available slot is in ~2–3 days; morning/evening preference is requested and booked accordingly.
 - Appointment call handling: At the scheduled time, the user calls the provided number and Guru Maa attends the consultation.
 - If you pay for a consultation, you can talk to Guru Maa 2-3 times maximum.
