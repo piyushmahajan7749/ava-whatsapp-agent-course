@@ -12,8 +12,11 @@ from googleapiclient.discovery import build
 
 logger = logging.getLogger(__name__)
 
-# Scopes required for calendar operations
-SCOPES = ['https://www.googleapis.com/auth/calendar']
+# Scopes required for calendar and sheets operations
+SCOPES = [
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/spreadsheets'
+]
 
 # File paths - try multiple locations
 def _get_project_root():
@@ -124,6 +127,76 @@ def get_calendar_service():
     return service
 
 
+@lru_cache(maxsize=1)
+def get_sheets_service():
+    """
+    Authenticate and return Google Sheets service.
+    
+    Uses same OAuth 2.0 credentials as Calendar service.
+    Both services share the same token.json file.
+    
+    Returns:
+        googleapiclient.discovery.Resource: Authenticated Sheets API service
+        
+    Raises:
+        FileNotFoundError: If credentials.json is not found
+        Exception: If authentication fails
+    """
+    creds = None
+    
+    # Check if we have previously saved credentials
+    if TOKEN_FILE.exists():
+        logger.info("Loading existing token from token.json for Sheets")
+        try:
+            creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
+        except Exception as e:
+            logger.warning(f"Failed to load token.json: {e}")
+            creds = None
+    
+    # If credentials are invalid or don't exist, authenticate
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            logger.info("Refreshing expired token for Sheets")
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                logger.error(f"Failed to refresh token: {e}")
+                # Delete invalid token and re-authenticate
+                if TOKEN_FILE.exists():
+                    TOKEN_FILE.unlink()
+                creds = None
+        
+        if not creds:
+            # Check if credentials.json exists
+            if not CREDENTIALS_FILE.exists():
+                logger.error(f"Looking for credentials.json at: {CREDENTIALS_FILE}")
+                raise FileNotFoundError(
+                    f"credentials.json not found at {CREDENTIALS_FILE}. "
+                    f"Please download it from Google Cloud Console and place it in the project root ({PROJECT_ROOT})."
+                )
+            
+            logger.info("Starting OAuth flow for Sheets authentication")
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(CREDENTIALS_FILE), 
+                SCOPES
+            )
+            
+            # Run local server for OAuth flow
+            creds = flow.run_local_server(port=0)
+            
+            logger.info("Sheets authentication successful")
+        
+        # Save the credentials for future use
+        with open(TOKEN_FILE, 'w') as token:
+            token.write(creds.to_json())
+            logger.info(f"Token saved to {TOKEN_FILE}")
+    
+    # Build and return the Sheets service
+    service = build('sheets', 'v4', credentials=creds)
+    logger.info("Google Sheets service initialized successfully")
+    return service
+
+
 def clear_token():
     """
     Clear stored authentication token.
@@ -138,6 +211,7 @@ def clear_token():
         logger.info("Token cleared. Next API call will re-authenticate.")
         # Clear the cache
         get_calendar_service.cache_clear()
+        get_sheets_service.cache_clear()
     else:
         logger.info("No token file to clear.")
 

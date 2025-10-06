@@ -9,6 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from googleapiclient.errors import HttpError
 
 from ai_companion.modules.calendar.auth import get_calendar_service
+from ai_companion.modules.sheets.sheets_manager import log_consultation_booking
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ def book_calendar_event(
     event_title: Annotated[str, "Title of the event"],
     event_description: Annotated[str, "Description of the event"] = "",
     attendee_email: Annotated[str, "Email of the attendee (optional)"] = "",
+    config: RunnableConfig = None,
 ) -> str:
     """
     Book an event in the calendar. IMPORTANT: Payment verification is required before booking.
@@ -123,26 +125,34 @@ def book_calendar_event(
     """
     logger.info(f"Booking event '{event_title}' from {start_time} to {end_time}")
     
-    # Check payment verification status
-    # We'll use a simpler approach: check if payment verification was recorded
-    # The state will be set by the payment_verification_node
-    from langchain_core.runnables import RunnableConfig
-    config = RunnableConfig.get()
-    thread_id = config.get("configurable", {}).get("thread_id") if config else None
+    # Get thread_id from config parameter
+    thread_id = None
+    if config:
+        thread_id = config.get("configurable", {}).get("thread_id")
+        if thread_id:
+            logger.info(f"Retrieved thread_id from config: {thread_id}")
+        else:
+            logger.warning("Config provided but no thread_id found")
+    else:
+        logger.warning("No config provided - skipping payment check")
     
-    payment_verified = _payment_verification_state.get(thread_id, False)
-    
-    if not payment_verified:
-        logger.warning(f"Booking attempt without payment verification for thread {thread_id}")
-        return (
-            "❌ Payment verification required before booking.\n\n"
-            "Please send a screenshot of your payment transaction first. "
-            "Once I verify your payment, I'll proceed with booking your appointment.\n\n"
-            "You can send the payment screenshot by uploading an image showing:\n"
-            "- Payment confirmation from UPI app (GPay, PhonePe, Paytm, etc.)\n"
-            "- Transaction details including amount and status\n"
-            "- Payment successful message"
-        )
+    # Check payment verification if we have a thread_id
+    if thread_id:
+        payment_verified = _payment_verification_state.get(thread_id, False)
+        
+        if not payment_verified:
+            logger.warning(f"Booking attempt without payment verification for thread {thread_id}")
+            return (
+                "❌ Payment verification required before booking.\n\n"
+                "Please send a screenshot of your payment transaction first. "
+                "Once I verify your payment, I'll proceed with booking your appointment.\n\n"
+                "You can send the payment screenshot by uploading an image showing:\n"
+                "- Payment confirmation from UPI app (GPay, PhonePe, Paytm, etc.)\n"
+                "- Transaction details including amount and status\n"
+                "- Payment successful message"
+            )
+    else:
+        logger.warning("No thread_id available - skipping payment verification check")
     
     try:
         # Validate and normalize datetime format
@@ -202,6 +212,48 @@ def book_calendar_event(
         
         event_id = created_event.get('id')
         event_link = created_event.get('htmlLink')
+        
+        # 🆕 Log booking to Google Sheets for business records
+        try:
+            # Get payment details for split payment tracking (if we have thread_id)
+            payment_summary = None
+            payment_details = None
+            payment_amount = 2100  # Default consultation price
+            
+            if thread_id:
+                payment_summary = get_payment_total(thread_id)
+                payment_amount = payment_summary['total']
+                if payment_summary['count'] > 1:
+                    # Format split payment details: "2000 + 100"
+                    payment_details = " + ".join([str(p) for p in payment_summary['payments']])
+            
+            # Extract customer name from event title
+            # Format is usually "Consultation - [Name]" or just the name
+            customer_name = event_title.replace("Consultation - ", "").replace("Consultation with ", "").replace("Audio Consultation with Guru Maa for ", "")
+            
+            # Log consultation booking to Sheets
+            sheets_result = log_consultation_booking(
+                customer_name=customer_name,
+                date_of_birth="",  # Could be extracted from description if stored
+                consultation_datetime=start_time_formatted,
+                payment_amount=payment_amount,
+                payment_details=payment_details,
+                calendar_event_id=event_id,
+                calendar_link=event_link,
+                thread_id=thread_id or "",
+                contact_info=attendee_email if attendee_email else "",
+                notes=event_description,
+            )
+            
+            if sheets_result['success']:
+                logger.info(f"📊 Booking logged to Sheets: {sheets_result['booking_id']}")
+            else:
+                logger.warning(f"⚠️  Failed to log booking to Sheets: {sheets_result.get('error')}")
+                # Don't fail the booking if Sheets write fails - it's supplementary
+                
+        except Exception as e:
+            logger.error(f"Error logging booking to Sheets: {e}", exc_info=True)
+            # Continue - Sheets logging is supplementary, don't block calendar booking
         
         attendee_info = f" with attendee {attendee_email}" if attendee_email else ""
         return (

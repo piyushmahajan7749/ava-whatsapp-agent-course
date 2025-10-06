@@ -33,6 +33,9 @@ class Settings(BaseSettings):
 
     # Optional: path to a UPI QR image to share on request
     UPI_QR_IMAGE_PATH: str | None = "img/QrCode.jpeg"
+    
+    # Google Sheets configuration for booking logs
+    GOOGLE_SHEETS_BOOKING_ID: str | None = None
 
 
 settings = Settings()

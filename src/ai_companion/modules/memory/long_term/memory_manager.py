@@ -45,37 +45,51 @@ class MemoryManager:
         prompt = MEMORY_ANALYSIS_PROMPT.format(message=message)
         return await self.llm.ainvoke(prompt)
 
-    async def extract_and_store_memories(self, message: BaseMessage) -> None:
-        """Extract important information from a message and store in vector store."""
+    async def extract_and_store_memories(self, message: BaseMessage, user_id: str = None) -> None:
+        """Extract important information from a message and store in vector store.
+        
+        Args:
+            message: The message to analyze
+            user_id: Optional user identifier (phone number) to isolate memories per user
+        """
         if message.type != "human":
             return
 
         # Analyze the message for importance and formatting
         analysis = await self._analyze_memory(message.content)
         if analysis.is_important and analysis.formatted_memory:
-            # Check if similar memory exists
-            similar = self.vector_store.find_similar_memory(analysis.formatted_memory)
+            # Check if similar memory exists (for same user if user_id provided)
+            similar = self.vector_store.find_similar_memory(analysis.formatted_memory, user_id=user_id)
             if similar:
                 # Skip storage if we already have a similar memory
-                self.logger.info(f"Similar memory already exists: '{analysis.formatted_memory}'")
+                self.logger.info(f"Similar memory already exists for user {user_id}: '{analysis.formatted_memory}'")
                 return
 
-            # Store new memory
-            self.logger.info(f"Storing new memory: '{analysis.formatted_memory}'")
+            # Store new memory with user context
+            self.logger.info(f"Storing new memory for user {user_id}: '{analysis.formatted_memory}'")
             self.vector_store.store_memory(
                 text=analysis.formatted_memory,
                 metadata={
                     "id": str(uuid.uuid4()),
                     "timestamp": datetime.now().isoformat(),
                 },
+                user_id=user_id,
             )
 
-    def get_relevant_memories(self, context: str) -> List[str]:
-        """Retrieve relevant memories based on the current context."""
-        memories = self.vector_store.search_memories(context, k=settings.MEMORY_TOP_K)
+    def get_relevant_memories(self, context: str, user_id: str = None) -> List[str]:
+        """Retrieve relevant memories based on the current context.
+        
+        Args:
+            context: The context to search for
+            user_id: Optional user identifier to filter memories by user (phone number)
+            
+        Returns:
+            List of memory texts relevant to the context and user
+        """
+        memories = self.vector_store.search_memories(context, user_id=user_id, k=settings.MEMORY_TOP_K)
         if memories:
             for memory in memories:
-                self.logger.debug(f"Memory: '{memory.text}' (score: {memory.score:.2f})")
+                self.logger.debug(f"Memory for user {user_id}: '{memory.text}' (score: {memory.score:.2f})")
         return [memory.text for memory in memories]
 
     def format_memories_for_prompt(self, memories: List[str]) -> str:

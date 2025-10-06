@@ -516,26 +516,48 @@ async def summarize_conversation_node(state: AICompanionState):
     return {"summary": response.content, "messages": delete_messages}
 
 
-async def memory_extraction_node(state: AICompanionState):
-    """Extract and store important information from the last message."""
+async def memory_extraction_node(state: AICompanionState, config: RunnableConfig):
+    """Extract and store important information from the last message with user context.
+    
+    Args:
+        state: Current conversation state
+        config: Runnable config containing thread_id (user's phone number)
+    """
     if not state["messages"]:
         return {}
 
     memory_manager = get_memory_manager()
-    await memory_manager.extract_and_store_memories(state["messages"][-1])
+    
+    # Get user_id from thread_id (phone number)
+    thread_id = config.get("configurable", {}).get("thread_id") if config else None
+    
+    # Extract and store memories with user context
+    await memory_manager.extract_and_store_memories(state["messages"][-1], user_id=thread_id)
+    
+    logger.debug(f"Memory extraction complete for user: {thread_id}")
     return {}
 
 
-def memory_injection_node(state: AICompanionState):
-    """Retrieve and inject relevant memories into the character card."""
+def memory_injection_node(state: AICompanionState, config: RunnableConfig):
+    """Retrieve and inject relevant user-specific memories into the character card.
+    
+    Args:
+        state: Current conversation state
+        config: Runnable config containing thread_id (user's phone number)
+    """
     memory_manager = get_memory_manager()
 
-    # Get relevant memories based on recent conversation
+    # Get user_id from thread_id (phone number)
+    thread_id = config.get("configurable", {}).get("thread_id") if config else None
+
+    # Get relevant memories based on recent conversation, filtered by user
     recent_context = " ".join([m.content for m in state["messages"][-3:]])
-    memories = memory_manager.get_relevant_memories(recent_context)
+    memories = memory_manager.get_relevant_memories(recent_context, user_id=thread_id)
 
     # Format memories for the character card
     memory_context = memory_manager.format_memories_for_prompt(memories)
+    
+    logger.debug(f"Memory injection complete for user {thread_id}: {len(memories)} memories retrieved")
 
     return {"memory_context": memory_context}
 

@@ -18,9 +18,18 @@ image_to_text = ImageToText()
 
 @cl.on_chat_start
 async def on_chat_start():
-    """Initialize the chat session"""
-    # thread_id = cl.user_session.get("id")
-    cl.user_session.set("thread_id", 1)
+    """Initialize chat session with unique thread ID for each user."""
+    import uuid
+    
+    # Generate unique session ID for this user instead of hardcoded 1
+    # This ensures each Chainlit user has isolated chat history and memories
+    session_id = str(uuid.uuid4())
+    cl.user_session.set("thread_id", session_id)
+    
+    # Welcome message with session info
+    await cl.Message(
+        content=f"👋 Welcome! Your session has been started.\n\nSession ID: `{session_id[:8]}...`"
+    ).send()
 
 
 @cl.on_message
