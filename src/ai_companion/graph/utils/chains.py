@@ -1,35 +1,80 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from pydantic import BaseModel, Field
+from typing import Optional
 
-from ai_companion.core.prompts import CHARACTER_CARD_PROMPT, ROUTER_PROMPT
+from ai_companion.core.prompts import CHARACTER_CARD_PROMPT, INTENT_ROUTER_PROMPT
 from ai_companion.core.knowledge import BUSINESS_KNOWLEDGE
 from ai_companion.graph.utils.helpers import AsteriskRemovalParser, get_chat_model
 from ai_companion.modules.calendar.google_calendar_tools import get_calendar_tools
 
 
 class RouterResponse(BaseModel):
+    """Enhanced router response with intent detection and conversation stage tracking."""
+    
+    # Media type routing (preserved from original)
     response_type: str = Field(
-        description="The response type to give to the user. It must be one of: 'conversation', 'image' or 'audio'"
+        description="The media response type. Must be one of: 'conversation', 'image', or 'audio'"
+    )
+    
+    # Intent routing (new)
+    primary_intent: str = Field(
+        description="The primary intent of the user. Must be one of: 'booking', 'consultation_inquiry', 'products_pooja', 'general'"
+    )
+    
+    secondary_intent: Optional[str] = Field(
+        default=None,
+        description="Optional secondary intent if message contains multiple intents. Can be: 'booking', 'consultation_inquiry', 'products_pooja', 'general', or None"
+    )
+    
+    confidence: float = Field(
+        description="Confidence score for the primary intent classification. Range: 0.0 to 1.0",
+        ge=0.0,
+        le=1.0
+    )
+    
+    conversation_stage: str = Field(
+        description="Current stage in customer journey. Must be one of: 'inquiry', 'interested', 'payment_pending', 'payment_verified', 'booking_ready', 'confirmed', 'general_chat'"
+    )
+    
+    reasoning: str = Field(
+        description="Brief explanation of the routing decision (1-2 sentences)"
     )
 
 
 def get_router_chain():
+    """
+    Get the enhanced intent-based router chain.
+    
+    Returns a chain that analyzes conversation context and returns:
+    - Media type (conversation/audio/image)
+    - Primary intent (booking/consultation_inquiry/products_pooja/general)
+    - Secondary intent (if hybrid intent detected)
+    - Confidence score
+    - Conversation stage
+    """
     model = get_chat_model(temperature=0.3).with_structured_output(RouterResponse)
 
     prompt = ChatPromptTemplate.from_messages(
-        [("system", ROUTER_PROMPT), MessagesPlaceholder(variable_name="messages")]
+        [("system", INTENT_ROUTER_PROMPT), MessagesPlaceholder(variable_name="messages")]
     )
 
     return prompt | model
 
 
-def get_character_response_chain(summary: str = "", enable_tools: bool = False):
+def get_character_response_chain(
+    summary: str = "", 
+    enable_tools: bool = False,
+    additional_context: str = "",
+    conversation_stage: str = ""
+):
     """
-    Get the character response chain with optional tool calling support.
+    Get the character response chain with optional tool calling support and dynamic context.
     
     Args:
         summary: Conversation summary to include in the prompt
         enable_tools: If True, bind calendar tools to the model for tool calling
+        additional_context: Intent-specific context sections to inject (e.g., BOOKING_CONTEXT)
+        conversation_stage: Current stage in customer journey (inquiry, payment_verified, etc.)
     
     Returns:
         A chain that can generate character responses (with or without tool calls)
@@ -79,6 +124,20 @@ def get_character_response_chain(summary: str = "", enable_tools: bool = False):
         
         if inputs.get("pooja_context"):
             system_message += f"\n\nPooja Context: {inputs['pooja_context']}"
+        
+        # ============= NEW: INTENT-BASED CONTEXT INJECTION =============
+        # Inject specialized context based on intent
+        if additional_context:
+            system_message += f"\n\n{additional_context}"
+        
+        # Add conversation stage context if available
+        if conversation_stage:
+            system_message += f"\n\n**Current Conversation Stage:** {conversation_stage}"
+            system_message += (
+                "\nUse this stage information to provide contextually appropriate responses. "
+                "For example, if stage is 'payment_verified', focus on collecting booking details."
+            )
+        # ================================================================
         
         if enable_tools:
             system_message += (

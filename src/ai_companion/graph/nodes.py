@@ -33,11 +33,28 @@ logger = logging.getLogger(__name__)
 
 async def router_node(state: AICompanionState):
     """
-    Route the conversation to appropriate workflow (conversation/audio).
+    Enhanced router with intent detection and conversation stage tracking.
+    
+    Routes based on:
+    - Media type (conversation/audio/image)
+    - Primary intent (booking/consultation_inquiry/products_pooja/general)
+    - Secondary intent (if hybrid intent detected)
+    - Conversation stage (inquiry/interested/payment_verified/etc.)
     
     Filters out tool-related messages since router doesn't need them.
     """
     from langchain_core.messages import ToolMessage
+    
+    # Edge case: Handle empty message history
+    if not state.get("messages"):
+        logger.warning("Router called with empty message history, using defaults")
+        return {
+            "workflow": "conversation",
+            "primary_intent": "general",
+            "secondary_intent": None,
+            "confidence": 1.0,
+            "conversation_stage": "inquiry",
+        }
     
     # Filter out tool calls and tool messages for the router
     # Router only needs to see human messages and regular AI responses
@@ -51,9 +68,36 @@ async def router_node(state: AICompanionState):
             continue
         messages_for_router.append(msg)
     
+    # Edge case: All messages filtered out (only tool messages)
+    if not messages_for_router:
+        logger.warning("All messages filtered out (tool messages only), using defaults")
+        return {
+            "workflow": "conversation",
+            "primary_intent": "general",
+            "secondary_intent": None,
+            "confidence": 0.8,
+            "conversation_stage": "general_chat",
+        }
+    
     chain = get_router_chain()
     response = await chain.ainvoke({"messages": messages_for_router})
-    return {"workflow": response.response_type}
+    
+    # Log routing decision for debugging
+    logger.info(
+        f"Router Decision - Media: {response.response_type}, "
+        f"Intent: {response.primary_intent} (secondary: {response.secondary_intent}), "
+        f"Stage: {response.conversation_stage}, "
+        f"Confidence: {response.confidence:.2f}, "
+        f"Reasoning: {response.reasoning}"
+    )
+    
+    return {
+        "workflow": response.response_type,
+        "primary_intent": response.primary_intent,
+        "secondary_intent": response.secondary_intent,
+        "confidence": response.confidence,
+        "conversation_stage": response.conversation_stage,
+    }
 
 
 def context_injection_node(state: AICompanionState):
@@ -125,31 +169,93 @@ def payment_verification_node(state: AICompanionState, config: RunnableConfig):
 
 async def conversation_node(state: AICompanionState, config: RunnableConfig):
     """
-    Handle conversation with tool calling support.
+    Handle conversation with dynamic context loading based on intent.
     
-    This node can either:
-    1. Generate a text response
-    2. Make tool calls (if user asks about calendar/scheduling)
+    This node:
+    1. Detects user's intent (from router)
+    2. Loads appropriate context sections (booking/consultation/products/general)
+    3. Handles hybrid intents (loads multiple contexts)
+    4. Dynamically enables tools based on intent
+    5. Maintains conversation continuity
     """
+    from ai_companion.core.prompts import (
+        BOOKING_CONTEXT,
+        CONSULTATION_INQUIRY_CONTEXT,
+        PRODUCTS_POOJA_CONTEXT,
+        GENERAL_CONTEXT,
+    )
+    
     current_activity = ScheduleContextGenerator.get_current_activity()
     memory_context = state.get("memory_context", "")
     pooja_context = state.get("pooja_context", "")
+    
+    # Get intent and stage from router
+    primary_intent = state.get("primary_intent", "general")
+    secondary_intent = state.get("secondary_intent")
+    conversation_stage = state.get("conversation_stage", "inquiry")
+    confidence = state.get("confidence", 0.5)
 
-    # Begin grounded LLM path (policy short-circuit removed)
     logger.debug(
-        "conversation_node: begin; messages=%d, has_memory=%s, has_pooja=%s",
+        "conversation_node: begin; messages=%d, intent=%s (secondary=%s), stage=%s, confidence=%.2f",
         len(state.get("messages", [])),
-        bool(memory_context),
-        bool(pooja_context),
+        primary_intent,
+        secondary_intent,
+        conversation_stage,
+        confidence,
+    )
+    
+    # TODO: Future enhancement - Add confidence threshold handling
+    # if confidence < 0.4:
+    #     # Ask clarifying question instead of proceeding with uncertain intent
+    #     clarifying_prompt = "I want to make sure I understand correctly. Are you asking about..."
+    #     return {"messages": [AIMessage(content=clarifying_prompt)]}
+    #
+    # This would improve accuracy for ambiguous queries
+
+    # ============= DYNAMIC CONTEXT LOADING =============
+    # Build context sections based on detected intent(s)
+    context_sections = []
+    enable_tools = False
+    
+    # Primary intent context
+    if primary_intent == "booking":
+        context_sections.append(BOOKING_CONTEXT)
+        enable_tools = True  # Enable calendar tools for booking
+        logger.debug("Loaded BOOKING_CONTEXT, tools enabled")
+    elif primary_intent == "consultation_inquiry":
+        context_sections.append(CONSULTATION_INQUIRY_CONTEXT)
+        logger.debug("Loaded CONSULTATION_INQUIRY_CONTEXT")
+    elif primary_intent == "products_pooja":
+        context_sections.append(PRODUCTS_POOJA_CONTEXT)
+        logger.debug("Loaded PRODUCTS_POOJA_CONTEXT")
+    else:  # general
+        context_sections.append(GENERAL_CONTEXT)
+        logger.debug("Loaded GENERAL_CONTEXT")
+    
+    # Secondary intent context (for hybrid intents)
+    if secondary_intent:
+        logger.debug(f"Hybrid intent detected, adding secondary context: {secondary_intent}")
+        if secondary_intent == "booking" and primary_intent != "booking":
+            context_sections.append(BOOKING_CONTEXT)
+            enable_tools = True  # Enable tools if booking is mentioned
+        elif secondary_intent == "consultation_inquiry" and primary_intent != "consultation_inquiry":
+            context_sections.append(CONSULTATION_INQUIRY_CONTEXT)
+        elif secondary_intent == "products_pooja" and primary_intent != "products_pooja":
+            context_sections.append(PRODUCTS_POOJA_CONTEXT)
+    
+    # Combine all context sections
+    additional_context = "\n\n---\n\n".join(context_sections)
+    # ===================================================
+    
+    chain = get_character_response_chain(
+        summary=state.get("summary", ""),
+        enable_tools=enable_tools,
+        additional_context=additional_context,
+        conversation_stage=conversation_stage,
     )
 
-    # Enable tools for calendar-related queries
-    # You can make this smarter by detecting calendar intent in router if needed
-    enable_tools = True  # Always enable tools; LLM will decide when to use them
-    
-    chain = get_character_response_chain(state.get("summary", ""), enable_tools=enable_tools)
-
-    logger.debug("conversation_node: invoking character chain (tools_enabled=%s)", enable_tools)
+    logger.debug("conversation_node: invoking character chain (tools_enabled=%s, contexts=%d)", 
+                 enable_tools, len(context_sections))
     response = await chain.ainvoke(
         {
             "messages": state["messages"],
@@ -190,11 +296,26 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
 
 
 async def image_node(state: AICompanionState, config: RunnableConfig):
+    """
+    Generate and return an image based on conversation context.
+    
+    Note: Image generation typically doesn't need specialized intent context,
+    but we include it for consistency and future flexibility.
+    """
+    from ai_companion.core.prompts import GENERAL_CONTEXT
+    
     current_activity = ScheduleContextGenerator.get_current_activity()
     memory_context = state.get("memory_context", "")
     pooja_context = state.get("pooja_context", "")
+    conversation_stage = state.get("conversation_stage", "general_chat")
 
-    chain = get_character_response_chain(state.get("summary", ""))
+    # Use general context for image generation
+    chain = get_character_response_chain(
+        summary=state.get("summary", ""),
+        enable_tools=False,
+        additional_context=GENERAL_CONTEXT,
+        conversation_stage=conversation_stage,
+    )
     text_to_image_module = get_text_to_image_module()
 
     scenario = await text_to_image_module.create_scenario(state["messages"][-5:])
@@ -220,11 +341,41 @@ async def image_node(state: AICompanionState, config: RunnableConfig):
 
 
 async def audio_node(state: AICompanionState, config: RunnableConfig):
+    """
+    Generate and return an audio response based on conversation context.
+    
+    Uses intent-based context to provide appropriate audio responses.
+    """
+    from ai_companion.core.prompts import (
+        BOOKING_CONTEXT,
+        CONSULTATION_INQUIRY_CONTEXT,
+        PRODUCTS_POOJA_CONTEXT,
+        GENERAL_CONTEXT,
+    )
+    
     current_activity = ScheduleContextGenerator.get_current_activity()
     memory_context = state.get("memory_context", "")
     pooja_context = state.get("pooja_context", "")
+    
+    # Get intent from state to provide appropriate context in audio response
+    primary_intent = state.get("primary_intent", "general")
+    conversation_stage = state.get("conversation_stage", "general_chat")
+    
+    # Load appropriate context based on intent
+    context_map = {
+        "booking": BOOKING_CONTEXT,
+        "consultation_inquiry": CONSULTATION_INQUIRY_CONTEXT,
+        "products_pooja": PRODUCTS_POOJA_CONTEXT,
+        "general": GENERAL_CONTEXT,
+    }
+    additional_context = context_map.get(primary_intent, GENERAL_CONTEXT)
 
-    chain = get_character_response_chain(state.get("summary", ""))
+    chain = get_character_response_chain(
+        summary=state.get("summary", ""),
+        enable_tools=False,  # No tools in audio responses
+        additional_context=additional_context,
+        conversation_stage=conversation_stage,
+    )
     text_to_speech_module = get_text_to_speech_module()
 
     response = await chain.ainvoke(
