@@ -39,3 +39,8 @@ class AICompanionState(MessagesState):
     secondary_intent: Optional[str]
     confidence: float
     conversation_stage: str
+    
+    # Payment verification details
+    payment_amount: Optional[int]  # Extracted payment amount (total if split payments)
+    payment_status: Optional[str]  # verified_full/partial_payment/amount_mismatch/verification_failed
+    payment_remaining: Optional[int]  # Remaining amount for split payments

@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     AZURE_OPENAI_API_KEY: str
     AZURE_OPENAI_API_ENDPOINT: str
     AZURE_OPENAI_API_VERSION: str
+    AZURE_OPENAI_VISION_DEPLOYMENT: str
 
     QDRANT_API_KEY: str | None
     QDRANT_URL: str
@@ -18,11 +19,10 @@ class Settings(BaseSettings):
     QDRANT_HOST: str | None = None
 
     TEXT_MODEL_NAME: str = "gpt-5-chat"
-    SMALL_TEXT_MODEL_NAME: str = "gpt-5-mini"
+    SMALL_TEXT_MODEL_NAME: str = "gpt-5-mini"# Azure OpenAI Vision deployment name
     STT_MODEL_NAME: str = "whisper-large-v3-turbo"
     TTS_MODEL_NAME: str = "eleven_flash_v2_5"
     TTI_MODEL_NAME: str = "black-forest-labs/FLUX.1-schnell-Free"
-    ITT_MODEL_NAME: str = "llama-3.2-90b-vision-preview"
 
     MEMORY_TOP_K: int = 3
     ROUTER_MESSAGES_TO_ANALYZE: int = 3

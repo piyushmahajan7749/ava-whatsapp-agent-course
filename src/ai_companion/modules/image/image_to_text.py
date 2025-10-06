@@ -3,20 +3,22 @@ import logging
 import os
 from typing import Optional, Union
 
+from langchain_openai import AzureChatOpenAI
+from langchain_core.messages import HumanMessage
+
 from ai_companion.core.exceptions import ImageToTextError
 from ai_companion.settings import settings
-from groq import Groq
 
 
 class ImageToText:
-    """A class to handle image-to-text conversion using Groq's vision capabilities."""
+    """A class to handle image-to-text conversion using Azure OpenAI's vision capabilities."""
 
-    REQUIRED_ENV_VARS = ["GROQ_API_KEY"]
+    REQUIRED_ENV_VARS = ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_ENDPOINT"]
 
     def __init__(self):
         """Initialize the ImageToText class and validate environment variables."""
         self._validate_env_vars()
-        self._client: Optional[Groq] = None
+        self._client: Optional[AzureChatOpenAI] = None
         self.logger = logging.getLogger(__name__)
 
     def _validate_env_vars(self) -> None:
@@ -26,14 +28,22 @@ class ImageToText:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
     @property
-    def client(self) -> Groq:
-        """Get or create Groq client instance using singleton pattern."""
+    def client(self) -> AzureChatOpenAI:
+        """Get or create Azure OpenAI client instance using singleton pattern."""
         if self._client is None:
-            self._client = Groq(api_key=settings.GROQ_API_KEY)
+            self._client = AzureChatOpenAI(
+                azure_deployment=settings.AZURE_OPENAI_VISION_DEPLOYMENT,
+                api_version=settings.AZURE_OPENAI_API_VERSION,
+                max_tokens=1000,
+                timeout=60.0,
+                max_retries=3,
+                api_key=settings.AZURE_OPENAI_API_KEY,
+                azure_endpoint=settings.AZURE_OPENAI_API_ENDPOINT,
+            )
         return self._client
 
     async def analyze_image(self, image_data: Union[str, bytes], prompt: str = "") -> str:
-        """Analyze an image using Groq's vision capabilities.
+        """Analyze an image using Azure OpenAI's vision capabilities.
 
         Args:
             image_data: Either a file path (str) or binary image data (bytes)
@@ -66,31 +76,24 @@ class ImageToText:
             if not prompt:
                 prompt = "Please describe what you see in this image in detail."
 
-            # Create the messages for the vision API
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
-                        },
-                    ],
-                }
-            ]
-
-            # Make the API call
-            response = self.client.chat.completions.create(
-                model=settings.ITT_MODEL_NAME,
-                messages=messages,
-                max_tokens=1000,
+            # Create message with image for Azure OpenAI Vision using LangChain pattern
+            message = HumanMessage(
+                content=[
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
+                    },
+                ]
             )
 
-            if not response.choices:
+            # Make the API call using LangChain's invoke pattern
+            response = await self.client.ainvoke([message])
+
+            if not response or not response.content:
                 raise ImageToTextError("No response received from the vision model")
 
-            description = response.choices[0].message.content
+            description = response.content
             self.logger.info(f"Generated image description: {description}")
 
             return description

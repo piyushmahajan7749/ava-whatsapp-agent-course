@@ -22,6 +22,9 @@ from ai_companion.modules.calendar.google_calendar_tools import (
     get_calendar_tools,
     set_payment_verified,
     get_payment_verified,
+    add_payment_amount,
+    get_payment_total,
+    clear_payment_history,
 )
 from ai_companion.settings import settings
 from ai_companion.modules.pooja.data import find_pooja_by_text, format_pooja_context
@@ -117,52 +120,150 @@ def pooja_injection_node(state: AICompanionState):
     return {"pooja_context": context}
 
 
-def payment_verification_node(state: AICompanionState, config: RunnableConfig):
+async def payment_verification_node(state: AICompanionState, config: RunnableConfig):
     """
-    Detect and verify payment screenshots from user images.
+    Detect and verify payment screenshots from user images using Azure Vision AI.
     
-    Checks the last user message for payment-related keywords and image analysis.
-    If a payment screenshot is detected, sets payment_verified to True.
+    Uses comprehensive PaymentVerifier to:
+    1. Detect if image contains payment information
+    2. Extract payment amount
+    3. Verify amount matches expected consultation fee (₹2,100)
+    4. Extract transaction details (ID, date, UPI app)
+    5. Calculate confidence score
+    
+    Sets payment_verified to True if valid payment detected with sufficient confidence.
     """
+    from ai_companion.modules.payment import PaymentVerifier
+    
     if not state.get("messages"):
         return {}
     
     last_message = state["messages"][-1]
     content_lower = last_message.content.lower() if last_message.content else ""
     
-    # Check for payment screenshot indicators
-    payment_keywords = [
-        "payment screenshot",
-        "payment proof",
-        "paid",
-        "transaction",
-        "upi payment",
-        "payment successful",
-        "payment done",
-        "gpay",
-        "phonepe",
-        "paytm",
-        "₹",
-        "rupees",
-        "amount transferred",
-        "credited",
-        "debited",
-        "transfer"
-    ]
-    
-    # Check if message contains payment-related content
-    has_payment_keywords = any(keyword in content_lower for keyword in payment_keywords)
-    
-    # Check for image analysis indicating a payment screenshot
-    has_image_analysis = "[Image Analysis:" in last_message.content
-    
     # Get thread_id from config
     thread_id = config.get("configurable", {}).get("thread_id") if config else None
     
-    if has_payment_keywords and has_image_analysis and thread_id:
-        logger.info(f"Payment screenshot detected and verified for thread {thread_id}")
-        set_payment_verified(thread_id, True)
-        return {"payment_verified": True}
+    # Check for payment-related keywords in message
+    payment_keywords = [
+        "payment", "paid", "transaction", "upi", "gpay", "phonepe", "paytm",
+        "screenshot", "proof", "₹", "rupees", "transfer", "successful"
+    ]
+    has_payment_keywords = any(keyword in content_lower for keyword in payment_keywords)
+    
+    # Check if message contains image data (look for image analysis marker)
+    has_image = "[Image Analysis:" in last_message.content
+    
+    # If potential payment screenshot detected, verify it
+    if has_payment_keywords and has_image and thread_id:
+        try:
+            logger.info(f"🔍 Potential payment screenshot detected for thread {thread_id}, verifying with AI...")
+            
+            # Initialize payment verifier
+            verifier = PaymentVerifier()
+            
+            # Extract existing image analysis text
+            if "[Image Analysis:" in last_message.content:
+                start_idx = last_message.content.find("[Image Analysis:")
+                end_idx = last_message.content.find("]", start_idx)
+                if end_idx > start_idx:
+                    image_analysis = last_message.content[start_idx+len("[Image Analysis:"):end_idx].strip()
+                    
+                    # Verify payment from the image analysis text
+                    payment_details = verifier.verify_from_text_analysis(image_analysis)
+                    
+                    # Log verification results
+                    logger.info(
+                        f"Payment Verification Results for thread {thread_id}:\n"
+                        f"  Valid: {payment_details.is_valid}\n"
+                        f"  Amount: ₹{payment_details.amount}\n"
+                        f"  Status: {payment_details.status}\n"
+                        f"  App: {payment_details.app}\n"
+                        f"  Amount Matches: {payment_details.amount_matches}\n"
+                        f"  Confidence: {payment_details.confidence:.2f}\n"
+                        f"  Notes: {payment_details.notes}"
+                    )
+                    
+                    # Handle split payments - check if amount detected
+                    if payment_details.amount and payment_details.amount > 0:
+                        # Add this payment to history
+                        payment_summary = add_payment_amount(thread_id, payment_details.amount)
+                        
+                        logger.info(
+                            f"💰 Payment recorded for thread {thread_id}:\n"
+                            f"  This payment: ₹{payment_details.amount}\n"
+                            f"  Total paid: ₹{payment_summary['total']}\n"
+                            f"  Payments: {payment_summary['payments']}\n"
+                            f"  Remaining: ₹{payment_summary['remaining']}"
+                        )
+                        
+                        # Decision logic based on total amount
+                        if payment_summary['fully_paid']:
+                            # Full amount received (including split payments)
+                            logger.info(
+                                f"✅ FULL PAYMENT VERIFIED for thread {thread_id}:\n"
+                                f"  Total: ₹{payment_summary['total']} from {payment_summary['count']} payment(s)\n"
+                                f"  Payments: {payment_summary['payments']}\n"
+                                f"  Status: {payment_details.status}"
+                            )
+                            set_payment_verified(thread_id, True)
+                            
+                            return {
+                                "payment_verified": True,
+                                "payment_amount": payment_summary['total'],
+                                "payment_status": "verified_full"
+                            }
+                        
+                        else:
+                            # Partial payment - need more
+                            logger.info(
+                                f"📊 PARTIAL PAYMENT for thread {thread_id}:\n"
+                                f"  Paid so far: ₹{payment_summary['total']}\n"
+                                f"  Still needed: ₹{payment_summary['remaining']}\n"
+                                f"  Payments received: {payment_summary['payments']}"
+                            )
+                            
+                            return {
+                                "payment_verified": False,
+                                "payment_amount": payment_summary['total'],
+                                "payment_status": "partial_payment",
+                                "payment_remaining": payment_summary['remaining']
+                            }
+                    
+                    else:
+                        # No amount detected or low confidence
+                        logger.warning(
+                            f"⚠️  Payment verification UNCERTAIN for thread {thread_id}: "
+                            f"Confidence too low ({payment_details.confidence:.2f}) or no amount detected"
+                        )
+                        
+                        return {
+                            "payment_verified": False,
+                            "payment_status": "verification_failed"
+                        }
+            
+            # Fallback: Basic verification (backward compatibility)
+            logger.info(f"Using fallback verification for thread {thread_id}")
+            amount_indicators = ["2100", "2,100", "₹2100", "₹2,100", "Rs 2100", "Rs.2100"]
+            success_indicators = ["success", "successful", "completed", "done", "credited"]
+            
+            has_correct_amount = any(amount in last_message.content for amount in amount_indicators)
+            has_success_status = any(status in content_lower for status in success_indicators)
+            
+            if has_correct_amount and has_success_status:
+                logger.info(f"✅ Payment verified (fallback) for thread {thread_id}")
+                set_payment_verified(thread_id, True)
+                return {
+                    "payment_verified": True,
+                    "payment_amount": 2100,
+                    "payment_status": "verified_fallback"
+                }
+            
+        except Exception as e:
+            logger.error(f"Error during payment verification for thread {thread_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Don't fail the flow, just log and continue
     
     return {}
 

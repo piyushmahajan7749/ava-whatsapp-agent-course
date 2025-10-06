@@ -12,8 +12,9 @@ from ai_companion.modules.calendar.auth import get_calendar_service
 
 logger = logging.getLogger(__name__)
 
-# Global state holder for payment verification
-_payment_verification_state = {}
+# Global state holders for payment verification
+_payment_verification_state = {}  # thread_id -> bool (verified or not)
+_payment_history = {}  # thread_id -> list of payment amounts
 
 
 @tool
@@ -238,3 +239,88 @@ def set_payment_verified(thread_id: str, verified: bool = True):
 def get_payment_verified(thread_id: str) -> bool:
     """Check if payment has been verified for a specific thread/user."""
     return _payment_verification_state.get(thread_id, False)
+
+
+def add_payment_amount(thread_id: str, amount: int) -> dict:
+    """
+    Add a payment amount to the history for a thread.
+    
+    Handles split payments by tracking multiple payment screenshots.
+    
+    Args:
+        thread_id: User/thread identifier
+        amount: Payment amount in Rupees
+        
+    Returns:
+        dict with:
+            - total: Total amount paid so far
+            - payments: List of individual payment amounts
+            - count: Number of payments
+            - fully_paid: Whether total >= expected amount
+    """
+    global _payment_history
+    
+    if thread_id not in _payment_history:
+        _payment_history[thread_id] = []
+    
+    _payment_history[thread_id].append(amount)
+    
+    total = sum(_payment_history[thread_id])
+    expected = 2100  # Consultation price
+    
+    result = {
+        "total": total,
+        "payments": _payment_history[thread_id].copy(),
+        "count": len(_payment_history[thread_id]),
+        "fully_paid": total >= expected,
+        "expected": expected,
+        "remaining": max(0, expected - total)
+    }
+    
+    logger.info(
+        f"Payment history for thread {thread_id}: "
+        f"{len(_payment_history[thread_id])} payment(s), "
+        f"Total: ₹{total}, Expected: ₹{expected}, Remaining: ₹{result['remaining']}"
+    )
+    
+    return result
+
+
+def get_payment_total(thread_id: str) -> dict:
+    """
+    Get total payment amount for a thread.
+    
+    Returns:
+        dict with payment summary
+    """
+    global _payment_history
+    
+    if thread_id not in _payment_history or not _payment_history[thread_id]:
+        return {
+            "total": 0,
+            "payments": [],
+            "count": 0,
+            "fully_paid": False,
+            "expected": 2100,
+            "remaining": 2100
+        }
+    
+    total = sum(_payment_history[thread_id])
+    expected = 2100
+    
+    return {
+        "total": total,
+        "payments": _payment_history[thread_id].copy(),
+        "count": len(_payment_history[thread_id]),
+        "fully_paid": total >= expected,
+        "expected": expected,
+        "remaining": max(0, expected - total)
+    }
+
+
+def clear_payment_history(thread_id: str):
+    """Clear payment history for a thread (after successful booking)."""
+    global _payment_history
+    if thread_id in _payment_history:
+        del _payment_history[thread_id]
+        logger.info(f"Cleared payment history for thread {thread_id}")
