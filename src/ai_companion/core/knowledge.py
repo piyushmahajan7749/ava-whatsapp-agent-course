@@ -7,10 +7,17 @@ KALAWA_PRODUCT_LINK = "https://www.upaai.in/product/apamargJadKalawa"
 POOJA_LIST_LINK = "https://www.upaai.in/hi/poojalist"
 QR_CODE_LINK = "https://www.upaai.in/qrcode.jpeg"
 
+# Customer Service Contact (for escalations - refunds, complaints, complex issues)
+CUSTOMER_SERVICE_PHONE = "+919131036482"
+CUSTOMER_SERVICE_WHATSAPP = "https://wa.me/919131036482"
+
 BUSINESS_KNOWLEDGE = f"""
 - Consultation charge: ₹{CONSULTATION_PRICE_INR}
 - Consultation call is for 20-30 minutes.
 - Guru Maa only talks on phone (audio call).
+- Customer service number: {CUSTOMER_SERVICE_PHONE}
+- Customer service WhatsApp: {CUSTOMER_SERVICE_WHATSAPP}
+- We cannot provide Guru maa's phone number directly, please use the customer service number or WhatsApp.
 - Services offered by UPAAI: Consultation booking (audio call with Guru Maa), Siddha Products (e.g., Kalawa, Yantra), Special Pooja booking (temple anushthaan).
 - Direct in‑person meetings are not directly bookable. First a consultation call is required; if Guru Maa deems face‑to‑face necessary, she will guide it herself. UMA handles consultation, products, and pooja bookings only. Meeting decisions are at Guru Maa's discretion.
 - Payment‑first policy: appointment/booking is confirmed only after payment; this applies to all customers. Once payment is received, the slot is confirmed.

@@ -18,12 +18,12 @@ class RouterResponse(BaseModel):
     
     # Intent routing (new)
     primary_intent: str = Field(
-        description="The primary intent of the user. Must be one of: 'booking', 'consultation_inquiry', 'products_pooja', 'general'"
+        description="The primary intent of the user. Must be one of: 'booking', 'consultation_inquiry', 'products_pooja', 'general', 'escalation_needed'"
     )
     
     secondary_intent: Optional[str] = Field(
         default=None,
-        description="Optional secondary intent if message contains multiple intents. Can be: 'booking', 'consultation_inquiry', 'products_pooja', 'general', or None"
+        description="Optional secondary intent if message contains multiple intents. Can be: 'booking', 'consultation_inquiry', 'products_pooja', 'general', 'escalation_needed', or None"
     )
     
     confidence: float = Field(
@@ -33,7 +33,7 @@ class RouterResponse(BaseModel):
     )
     
     conversation_stage: str = Field(
-        description="Current stage in customer journey. Must be one of: 'inquiry', 'interested', 'payment_pending', 'payment_verified', 'booking_ready', 'confirmed', 'general_chat'"
+        description="Current stage in customer journey. Must be one of: 'inquiry', 'interested', 'payment_pending', 'payment_verified', 'booking_ready', 'confirmed', 'general_chat', 'escalation_requested'"
     )
     
     reasoning: str = Field(

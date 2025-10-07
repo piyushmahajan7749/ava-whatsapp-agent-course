@@ -274,7 +274,7 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
     
     This node:
     1. Detects user's intent (from router)
-    2. Loads appropriate context sections (booking/consultation/products/general)
+    2. Loads appropriate context sections (booking/consultation/products/general/escalation)
     3. Handles hybrid intents (loads multiple contexts)
     4. Dynamically enables tools based on intent
     5. Maintains conversation continuity
@@ -284,6 +284,7 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
         CONSULTATION_INQUIRY_CONTEXT,
         PRODUCTS_POOJA_CONTEXT,
         GENERAL_CONTEXT,
+        ESCALATION_CONTEXT,
     )
     
     current_activity = ScheduleContextGenerator.get_current_activity()
@@ -319,7 +320,12 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
     enable_tools = False
     
     # Primary intent context
-    if primary_intent == "booking":
+    if primary_intent == "escalation_needed":
+        # PRIORITY: Escalation overrides everything
+        context_sections.append(ESCALATION_CONTEXT)
+        enable_tools = False  # NEVER enable tools during escalation
+        logger.info("🚨 ESCALATION DETECTED - Loading ESCALATION_CONTEXT, tools disabled")
+    elif primary_intent == "booking":
         context_sections.append(BOOKING_CONTEXT)
         enable_tools = True  # Enable calendar tools for booking
         logger.debug("Loaded BOOKING_CONTEXT, tools enabled")
@@ -336,9 +342,13 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
     # Secondary intent context (for hybrid intents)
     if secondary_intent:
         logger.debug(f"Hybrid intent detected, adding secondary context: {secondary_intent}")
-        if secondary_intent == "booking" and primary_intent != "booking":
+        # If escalation is secondary intent, it should still take priority
+        if secondary_intent == "escalation_needed" and primary_intent != "escalation_needed":
+            logger.warning("Escalation detected as secondary intent - consider escalating")
+            # Don't override primary context but note the escalation concern
+        elif secondary_intent == "booking" and primary_intent != "booking" and primary_intent != "escalation_needed":
             context_sections.append(BOOKING_CONTEXT)
-            enable_tools = True  # Enable tools if booking is mentioned
+            enable_tools = True  # Enable tools if booking is mentioned (unless escalation is primary)
         elif secondary_intent == "consultation_inquiry" and primary_intent != "consultation_inquiry":
             context_sections.append(CONSULTATION_INQUIRY_CONTEXT)
         elif secondary_intent == "products_pooja" and primary_intent != "products_pooja":
