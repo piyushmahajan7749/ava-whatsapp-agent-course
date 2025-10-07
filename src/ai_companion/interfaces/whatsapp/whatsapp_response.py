@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import asyncio
 from io import BytesIO
 from typing import Dict
 
@@ -10,6 +11,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from ai_companion.graph import graph_builder
+from ai_companion.graph.utils.helpers import chunk_message_by_sentences
 from ai_companion.modules.image import ImageToText
 from ai_companion.modules.speech import SpeechToText, TextToSpeech
 from ai_companion.settings import settings
@@ -206,7 +208,10 @@ async def send_response(
     message_type: str = "text",
     media_content: bytes = None,
 ) -> bool:
-    """Send response to user via WhatsApp API."""
+    """
+    Send response to user via WhatsApp API.
+    For text messages, automatically chunks long messages at sentence boundaries.
+    """
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json",
@@ -227,28 +232,56 @@ async def send_response(
             # Add caption for images
             if message_type == "image":
                 json_data["image"]["caption"] = response_text
+                
+            logger.debug("WA send payload headers=%s body=%s", headers, json_data)
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages",
+                    headers=headers,
+                    json=json_data,
+                )
+            
+            return response.status_code == 200
+            
         except Exception as e:
             logger.error(f"Media upload failed, falling back to text: {e}")
             message_type = "text"
 
+    # For text messages, chunk at sentence boundaries to avoid overwhelming users
     if message_type == "text":
-        json_data = {
-            "messaging_product": "whatsapp",
-            "to": from_number,
-            "type": "text",
-            "text": {"body": response_text},
-        }
-
-    logger.debug("WA send payload headers=%s body=%s", headers, json_data)
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages",
-            headers=headers,
-            json=json_data,
-        )
-
-    return response.status_code == 200
+        chunks = chunk_message_by_sentences(response_text, max_length=600)
+        logger.info(f"Sending {len(chunks)} message chunk(s) to {from_number}")
+        
+        all_success = True
+        for i, chunk in enumerate(chunks):
+            json_data = {
+                "messaging_product": "whatsapp",
+                "to": from_number,
+                "type": "text",
+                "text": {"body": chunk},
+            }
+            
+            logger.debug(f"WA send chunk {i+1}/{len(chunks)}: {chunk[:100]}...")
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages",
+                    headers=headers,
+                    json=json_data,
+                )
+            
+            if response.status_code != 200:
+                logger.error(f"Failed to send chunk {i+1}/{len(chunks)}: {response.text}")
+                all_success = False
+            
+            # Small delay between chunks to ensure proper ordering
+            if i < len(chunks) - 1:
+                await asyncio.sleep(0.5)
+        
+        return all_success
+    
+    return False
 
 
 async def upload_media(media_content: BytesIO, mime_type: str) -> str:
