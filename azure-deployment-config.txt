@@ -1,0 +1,23 @@
+Azure Deployment Configuration
+Generated: Wed Oct  8 16:36:44 IST 2025
+
+Resource Group: ava-whatsapp-rg
+Location: eastus
+Container App: ava-whatsapp
+Environment: ava-container-env
+Container Registry: avawhatsappacr20487.azurecr.io
+Storage Account: avawhatsappstorage20487
+File Share: ava-data
+
+Application URL: https://ava-whatsapp.calmcoast-908a8490.eastus.azurecontainerapps.io
+WhatsApp Webhook: https://ava-whatsapp.calmcoast-908a8490.eastus.azurecontainerapps.io/webhook
+
+To update deployment:
+  az acr build --registry avawhatsappacr20487 --image ava-whatsapp:latest --file Dockerfile .
+  az containerapp update --name ava-whatsapp --resource-group ava-whatsapp-rg --image avawhatsappacr20487.azurecr.io/ava-whatsapp:latest
+
+To view logs:
+  az containerapp logs show --name ava-whatsapp --resource-group ava-whatsapp-rg --follow
+
+To scale manually:
+  az containerapp update --name ava-whatsapp --resource-group ava-whatsapp-rg --min-replicas 3 --max-replicas 10

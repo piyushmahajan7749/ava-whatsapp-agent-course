@@ -69,7 +69,9 @@ class VectorStore:
         return any(col.name == self.COLLECTION_NAME for col in collections)
 
     def _create_collection(self) -> None:
-        """Create a new collection for storing memories."""
+        """Create a new collection for storing memories with user_id index."""
+        from qdrant_client.models import PayloadSchemaType
+        
         sample_embedding = self.model.encode("sample text")
         self.client.create_collection(
             collection_name=self.COLLECTION_NAME,
@@ -77,6 +79,13 @@ class VectorStore:
                 size=len(sample_embedding),
                 distance=Distance.COSINE,
             ),
+        )
+        
+        # Create index for user_id filtering (required for user-specific memories)
+        self.client.create_payload_index(
+            collection_name=self.COLLECTION_NAME,
+            field_name="user_id",
+            field_schema=PayloadSchemaType.KEYWORD,
         )
 
     def find_similar_memory(self, text: str, user_id: str = None) -> Optional[Memory]:
