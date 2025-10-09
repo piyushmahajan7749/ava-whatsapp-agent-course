@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     
     # Google Sheets configuration for booking logs
     GOOGLE_SHEETS_BOOKING_ID: str | None = None
+    
+    # Chatwoot integration (optional)
+    CHATWOOT_API_URL: str | None = None
+    CHATWOOT_API_TOKEN: str | None = None
+    CHATWOOT_INBOX_ID: str | None = None
+    CHATWOOT_ACCOUNT_ID: int = 1
 
 
 settings = Settings()
