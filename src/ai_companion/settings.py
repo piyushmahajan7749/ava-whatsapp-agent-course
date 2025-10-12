@@ -1,8 +1,17 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
+
+# Get the project root directory (3 levels up from this file: src/ai_companion/settings.py -> project root)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+ENV_FILE = PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_FILE), 
+        extra="ignore", 
+        env_file_encoding="utf-8"
+    )
 
     GROQ_API_KEY: str
     ELEVENLABS_API_KEY: str

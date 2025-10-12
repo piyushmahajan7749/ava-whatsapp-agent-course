@@ -19,7 +19,20 @@ class TextToSpeech:
 
     def _validate_env_vars(self) -> None:
         """Validate that all required environment variables are set."""
-        missing_vars = [var for var in self.REQUIRED_ENV_VARS if not os.getenv(var)]
+        # Check settings object instead of os.getenv (pydantic-settings loads .env into settings, not os.environ)
+        missing_vars = []
+        try:
+            if not settings.ELEVENLABS_API_KEY:
+                missing_vars.append("ELEVENLABS_API_KEY")
+        except:
+            missing_vars.append("ELEVENLABS_API_KEY")
+        
+        try:
+            if not settings.ELEVENLABS_VOICE_ID:
+                missing_vars.append("ELEVENLABS_VOICE_ID")
+        except:
+            missing_vars.append("ELEVENLABS_VOICE_ID")
+            
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
 

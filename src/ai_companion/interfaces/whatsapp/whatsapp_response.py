@@ -27,10 +27,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global module instances
-speech_to_text = SpeechToText()
-text_to_speech = TextToSpeech()
-image_to_text = ImageToText()
+# Global module instances (lazy initialization to avoid import-time errors)
+_speech_to_text = None
+_text_to_speech = None
+_image_to_text = None
+
+def get_speech_to_text():
+    """Lazy initialization of SpeechToText module."""
+    global _speech_to_text
+    if _speech_to_text is None:
+        _speech_to_text = SpeechToText()
+    return _speech_to_text
+
+def get_text_to_speech():
+    """Lazy initialization of TextToSpeech module."""
+    global _text_to_speech
+    if _text_to_speech is None:
+        _text_to_speech = TextToSpeech()
+    return _text_to_speech
+
+def get_image_to_text():
+    """Lazy initialization of ImageToText module."""
+    global _image_to_text
+    if _image_to_text is None:
+        _image_to_text = ImageToText()
+    return _image_to_text
 
 # Chatwoot client (optional - only if configured)
 chatwoot_client = get_chatwoot_client()
@@ -91,7 +112,7 @@ async def whatsapp_handler(request: Request) -> Response:
                 # Download and analyze image
                 image_bytes = await download_media(message["image"]["id"])
                 try:
-                    description = await image_to_text.analyze_image(
+                    description = await get_image_to_text().analyze_image(
                         image_bytes,
                         "Please describe what you see in this image in the context of our conversation.",
                     )
@@ -240,7 +261,7 @@ async def process_audio_message(message: Dict) -> str:
     audio_buffer.seek(0)
     audio_data = audio_buffer.read()
 
-    return await speech_to_text.transcribe(audio_data)
+    return await get_speech_to_text().transcribe(audio_data)
 
 
 async def send_response(

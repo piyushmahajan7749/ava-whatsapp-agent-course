@@ -20,10 +20,19 @@ class SpeechToText:
 
     def _validate_env_vars(self) -> None:
         """Validate that all required environment variables are set."""
-        missing_vars = [var for var in self.REQUIRED_ENV_VARS if not os.getenv(var)]
+        # Check settings object instead of os.getenv (pydantic-settings loads .env into settings, not os.environ)
+        missing_vars = []
+        try:
+            if not settings.GROQ_API_KEY:
+                missing_vars.append("GROQ_API_KEY")
+        except:
+            missing_vars.append("GROQ_API_KEY")
+            
         if missing_vars:
-            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
-
+            import warnings
+            warnings.warn(f"Missing environment variables: {', '.join(missing_vars)}. Speech-to-text will not be available.")
+            self._client = None  # Set to None so we can check later
+            return  # Don't raise, just warn
     @property
     def client(self) -> Groq:
         """Get or create Groq client instance using singleton pattern."""
