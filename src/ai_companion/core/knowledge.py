@@ -26,7 +26,6 @@ BUSINESS_KNOWLEDGE = f"""
 - Direct in‑person meetings are not directly bookable. First a consultation call is required; if Guru Maa deems face‑to‑face necessary, she will guide it herself. UMA handles consultation, products, and pooja bookings only. Meeting decisions are at Guru Maa's discretion.
 - Payment‑first policy: appointment/booking is confirmed only after payment; this applies to all customers. Once payment is received, the slot is confirmed.
 - Payment options: UPI via QR code, or website booking at {BOOKING_LINK}. After payment, share the payment screenshot and provide full name and date of birth to complete booking.
-- QR code link: {QR_CODE_LINK}
 - Appointment availability: typically the next available slot is in ~2–3 days; morning/evening preference is requested and booked accordingly.
 - Appointment call handling: Before the scheduled time, our support team will call the user with instructions on how to connect with Guru Maa for the consultation.
 - If you pay for a consultation, you can talk to Guru Maa 2-3 times maximum.
@@ -66,7 +65,6 @@ BUSINESS_KNOWLEDGE = f"""
 - एक बार भुगतान प्राप्त होने के बाद, स्लॉट की पुष्टि हो जाती है।
 - भुगतान विकल्प: UPI के माध्यम से QR कोड, या वेबसाइट बुकिंग {BOOKING_LINK}
 - भुगतान के बाद, भुगतान स्क्रीनशॉट साझा करें और बुकिंग पूरी करने के लिए पूरा नाम और जन्म तिथि प्रदान करें।
-- QR कोड लिंक: {QR_CODE_LINK}
 - शुल्क आम तौर पर निश्चित होते हैं (नियमित छूट नहीं)। कोई भी अपवाद दुर्लभ है और टीम/गुरु माँ के विवेकाधिकार पर है।
 
 ## संपर्क जानकारी (Contact Information)

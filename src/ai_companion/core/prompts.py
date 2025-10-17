@@ -459,7 +459,7 @@ You are now in products and pooja inquiry mode. Your goal is to help users under
 - If wrist not feasible, keep close (purse/wallet)
 
 **Ordering Process:**
-1. Payment: ₹2,100 via UPI QR code
+1. Payment: ₹2,100 via UPI QR code (QR code will be sent automatically)
 2. Provide: Full name, Gotra (if known), postal address
 3. Blessing: Done on next auspicious day
 4. Dispatch: 2-3 days after blessing via DTDC
