@@ -28,7 +28,7 @@ BUSINESS_KNOWLEDGE = f"""
 - Payment options: UPI via QR code, or website booking at {BOOKING_LINK}. After payment, share the payment screenshot and provide full name and date of birth to complete booking.
 - QR code link: {QR_CODE_LINK}
 - Appointment availability: typically the next available slot is in ~2–3 days; morning/evening preference is requested and booked accordingly.
-- Appointment call handling: At the scheduled time, the user calls the provided number and Guru Maa attends the consultation.
+- Appointment call handling: Before the scheduled time, our support team will call the user with instructions on how to connect with Guru Maa for the consultation.
 - If you pay for a consultation, you can talk to Guru Maa 2-3 times maximum.
 - Initiation/discipleship/siddhi/learning: Only Guru Maa guides this. Book a consultation first to discuss.
 - Kalawa wearing/handling: wear on the right wrist (seedha haath) preferably after a morning bath; can be worn any day/time; water‑resistant (no need to remove while bathing); can be worn alongside other kalawa/beads/kada; if wrist is not feasible, keep close (e.g., purse/wallet), though wrist is recommended for best effect.
