@@ -9,13 +9,15 @@ from langgraph.prebuilt import ToolNode
 from ai_companion.graph.state import AICompanionState
 from ai_companion.graph.utils.chains import (
     get_character_response_chain,
-    get_router_chain,
 )
 from ai_companion.graph.utils.helpers import (
     get_chat_model,
     get_text_to_image_module,
     get_text_to_speech_module,
+    chunk_response_into_messages,
 )
+from ai_companion.modules.language.hindi_detection import should_respond_in_hindi
+from ai_companion.modules.language.hindi_translation import translate_response_if_needed
 from ai_companion.modules.memory.long_term.memory_manager import get_memory_manager
 from ai_companion.modules.schedules.context_generation import ScheduleContextGenerator
 from ai_companion.modules.calendar.google_calendar_tools import (
@@ -28,96 +30,128 @@ from ai_companion.modules.calendar.google_calendar_tools import (
 )
 from ai_companion.settings import settings
 from ai_companion.modules.pooja.data import find_pooja_by_text, format_pooja_context
+from ai_companion.modules.products.data import find_products_by_text, format_product_context, get_relevant_products_with_ai
+from ai_companion.modules.intent.intent_classifier import classify_intent_with_ai, IntentClassification
 """Conversation and workflow nodes."""
 
 
 logger = logging.getLogger(__name__)
 
 
-async def router_node(state: AICompanionState):
-    """
-    Enhanced router with intent detection and conversation stage tracking.
-    
-    Routes based on:
-    - Media type (conversation/audio/image)
-    - Primary intent (booking/consultation_inquiry/products_pooja/general)
-    - Secondary intent (if hybrid intent detected)
-    - Conversation stage (inquiry/interested/payment_verified/etc.)
-    
-    Filters out tool-related messages since router doesn't need them.
-    """
-    from langchain_core.messages import ToolMessage
-    
-    # Edge case: Handle empty message history
-    if not state.get("messages"):
-        logger.warning("Router called with empty message history, using defaults")
-        return {
-            "workflow": "conversation",
-            "primary_intent": "general",
-            "secondary_intent": None,
-            "confidence": 1.0,
-            "conversation_stage": "inquiry",
-        }
-    
-    # Filter out tool calls and tool messages for the router
-    # Router only needs to see human messages and regular AI responses
-    messages_for_router = []
-    for msg in state["messages"][-settings.ROUTER_MESSAGES_TO_ANALYZE :]:
-        # Skip tool messages
-        if isinstance(msg, ToolMessage):
-            continue
-        # Skip AI messages that only contain tool calls (no actual text)
-        if isinstance(msg, AIMessage) and msg.tool_calls and not msg.content:
-            continue
-        messages_for_router.append(msg)
-    
-    # Edge case: All messages filtered out (only tool messages)
-    if not messages_for_router:
-        logger.warning("All messages filtered out (tool messages only), using defaults")
-        return {
-            "workflow": "conversation",
-            "primary_intent": "general",
-            "secondary_intent": None,
-            "confidence": 0.8,
-            "conversation_stage": "general_chat",
-        }
-    
-    chain = get_router_chain()
-    response = await chain.ainvoke({"messages": messages_for_router})
-    
-    # Log routing decision for debugging
-    logger.info(
-        f"Router Decision - Media: {response.response_type}, "
-        f"Intent: {response.primary_intent} (secondary: {response.secondary_intent}), "
-        f"Stage: {response.conversation_stage}, "
-        f"Confidence: {response.confidence:.2f}, "
-        f"Reasoning: {response.reasoning}"
-    )
-    
-    return {
-        "workflow": response.response_type,
-        "primary_intent": response.primary_intent,
-        "secondary_intent": response.secondary_intent,
-        "confidence": response.confidence,
-        "conversation_stage": response.conversation_stage,
-    }
-
-
 def context_injection_node(state: AICompanionState):
+    """Inject current schedule context for Ava's availability."""
     schedule_context = ScheduleContextGenerator.get_current_activity()
     if schedule_context != state.get("current_activity", ""):
         apply_activity = True
+        logger.debug(f"📅 [CONTEXT_INJECTION] Activity updated: {schedule_context[:80]}...")
     else:
         apply_activity = False
+        logger.debug(f"📅 [CONTEXT_INJECTION] Activity unchanged")
     return {"apply_activity": apply_activity, "current_activity": schedule_context}
 
 
-def pooja_injection_node(state: AICompanionState):
-    """Detect and inject relevant pooja context based on recent user messages."""
+def product_injection_node(state: AICompanionState):
+    """
+    Detect and inject relevant product/service context using AI-based analysis.
+    
+    This node uses AI to intelligently extract relevant products from the full catalog
+    based on user conversation context, providing more accurate and comprehensive results
+    than keyword-based matching.
+    """
     recent_text = " ".join([m.content for m in state["messages"][-3:]]) if state.get("messages") else ""
+    
+    # Use AI-based product context extraction
+    ai_products_context = get_relevant_products_with_ai(recent_text)
+    
+    # Keep pooja detection as fallback for specific pooja references
     pooja = find_pooja_by_text(recent_text)
-    context = format_pooja_context(pooja) if pooja else ""
-    return {"pooja_context": context}
+    pooja_context = format_pooja_context(pooja) if pooja else ""
+    
+    # Combine AI-extracted context with pooja context
+    product_context = ""
+    if pooja_context:
+        product_context += pooja_context + "\n\n"
+    
+    if ai_products_context:
+        product_context += ai_products_context
+    
+    # Log what was detected
+    if pooja:
+        logger.info(f"🛍️ [PRODUCT_INJECTION] Detected pooja: {pooja.get('name', 'Unknown')}")
+    if ai_products_context:
+        logger.info(f"🛍️ [PRODUCT_INJECTION] AI extracted product context: {len(ai_products_context)} chars")
+    if not pooja and not ai_products_context:
+        logger.debug(f"🛍️ [PRODUCT_INJECTION] No relevant products/services detected by AI")
+    
+    return {"product_context": product_context}
+
+
+def intent_classification_node(state: AICompanionState):
+    """
+    Classify user intent using AI-based analysis for better conversation routing.
+    
+    This node provides intelligent intent classification that helps the conversation
+    node make better decisions about how to respond and what tools to use.
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        logger.debug("🎯 [INTENT_CLASSIFICATION] No messages to classify")
+        return {"intent_context": ""}
+    
+    # Get the latest user message
+    latest_message = messages[-1]
+    user_message = ""
+    has_audio = False
+    has_image = False
+    
+    if hasattr(latest_message, 'content'):
+        user_message = latest_message.content
+    elif hasattr(latest_message, 'type'):
+        if latest_message.type == "audio":
+            has_audio = True
+            user_message = "User sent an audio message"
+        elif latest_message.type == "image":
+            has_image = True
+            user_message = "User sent an image"
+    
+    # Get conversation history for context
+    conversation_history = []
+    for msg in messages[-5:]:  # Last 5 messages for context
+        if hasattr(msg, 'content') and msg.content:
+            if hasattr(msg, 'type') and msg.type == 'human':
+                conversation_history.append(msg.content)
+            elif hasattr(msg, '__class__') and 'Human' in str(msg.__class__):
+                conversation_history.append(msg.content)
+    
+    # Classify intent using AI
+    try:
+        classification = classify_intent_with_ai(
+            user_message=user_message,
+            conversation_history=conversation_history,
+            has_audio=has_audio,
+            has_image=has_image
+        )
+        
+        # Format intent context for the conversation node
+        intent_context = f"""
+**Intent Analysis:**
+- Primary Intent: {classification.primary_intent}
+- Secondary Intent: {classification.secondary_intent or 'None'}
+- Confidence: {classification.confidence:.2f}
+- Conversation Stage: {classification.conversation_stage}
+- Reasoning: {classification.reasoning}
+"""
+        
+        logger.info(
+            f"🎯 [INTENT_CLASSIFICATION] Classified intent: {classification.primary_intent} "
+            f"(confidence: {classification.confidence:.2f}, stage: {classification.conversation_stage})"
+        )
+        
+        return {"intent_context": intent_context}
+        
+    except Exception as e:
+        logger.error(f"❌ [INTENT_CLASSIFICATION] Error classifying intent: {e}")
+        return {"intent_context": ""}
 
 
 async def payment_verification_node(state: AICompanionState, config: RunnableConfig):
@@ -270,16 +304,17 @@ async def payment_verification_node(state: AICompanionState, config: RunnableCon
 
 async def conversation_node(state: AICompanionState, config: RunnableConfig):
     """
-    Handle conversation with dynamic context loading based on intent.
+    Unified conversational agent that handles all user interactions.
     
-    This node:
-    1. Detects user's intent (from router)
-    2. Loads appropriate context sections (booking/consultation/products/general/escalation)
-    3. Handles hybrid intents (loads multiple contexts)
-    4. Dynamically enables tools based on intent
-    5. Maintains conversation continuity
+    This simplified node:
+    1. Uses a single set of unified instructions that naturally infer intent
+    2. Always enables tools - the LLM decides when to use them based on context
+    3. Provides all domain contexts for the agent to reference as needed
+    4. Eliminates complex routing logic in favor of natural conversation flow
+    5. Comprehensive logging for debugging and monitoring
     """
     from ai_companion.core.prompts import (
+        UNIFIED_AGENT_INSTRUCTIONS,
         BOOKING_CONTEXT,
         CONSULTATION_INQUIRY_CONTEXT,
         PRODUCTS_POOJA_CONTEXT,
@@ -287,122 +322,148 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
         ESCALATION_CONTEXT,
     )
     
+    # Get thread_id for logging
+    thread_id = config.get("configurable", {}).get("thread_id") if config else "unknown"
+    
+    # Log conversation start with state context
+    logger.info(
+        f"🗣️ [CONVERSATION_NODE] Starting conversation for thread {thread_id} | "
+        f"Messages: {len(state.get('messages', []))} | "
+        f"Payment verified: {state.get('payment_verified', False)} | "
+        f"Payment status: {state.get('payment_status', 'none')}"
+    )
+    
+    # Detect if user is communicating in Hindi
+    user_messages = [msg for msg in state.get("messages", []) if hasattr(msg, 'content') and msg.content]
+    should_translate_to_hindi = should_respond_in_hindi(user_messages)
+    
+    if should_translate_to_hindi:
+        logger.info(f"🇮🇳 [CONVERSATION_NODE] Hindi detected for thread {thread_id} - will translate response")
+    
+    # Gather all contextual information
     current_activity = ScheduleContextGenerator.get_current_activity()
     memory_context = state.get("memory_context", "")
-    pooja_context = state.get("pooja_context", "")
+    product_context = state.get("product_context", "")
+    intent_context = state.get("intent_context", "")
+    payment_verified = state.get("payment_verified", False)
+    payment_status = state.get("payment_status")
+    payment_amount = state.get("payment_amount")
+    payment_remaining = state.get("payment_remaining")
     
-    # Get intent and stage from router
-    primary_intent = state.get("primary_intent", "general")
-    secondary_intent = state.get("secondary_intent")
-    conversation_stage = state.get("conversation_stage", "inquiry")
-    confidence = state.get("confidence", 0.5)
-
     logger.debug(
-        "conversation_node: begin; messages=%d, intent=%s (secondary=%s), stage=%s, confidence=%.2f",
-        len(state.get("messages", [])),
-        primary_intent,
-        secondary_intent,
-        conversation_stage,
-        confidence,
+        f"📋 [CONVERSATION_NODE] Context loaded for thread {thread_id}:\n"
+        f"  - Current activity: {current_activity[:50] if current_activity else 'None'}...\n"
+        f"  - Memory context: {len(memory_context)} chars\n"
+        f"  - Product context: {len(product_context)} chars\n"
+        f"  - Intent context: {len(intent_context)} chars\n"
+        f"  - Payment: verified={payment_verified}, status={payment_status}, amount={payment_amount}, remaining={payment_remaining}"
     )
     
-    # TODO: Future enhancement - Add confidence threshold handling
-    # if confidence < 0.4:
-    #     # Ask clarifying question instead of proceeding with uncertain intent
-    #     clarifying_prompt = "I want to make sure I understand correctly. Are you asking about..."
-    #     return {"messages": [AIMessage(content=clarifying_prompt)]}
-    #
-    # This would improve accuracy for ambiguous queries
-
-    # ============= DYNAMIC CONTEXT LOADING =============
-    # Build context sections based on detected intent(s)
-    context_sections = []
-    enable_tools = False
+    # Combine all domain knowledge contexts for the agent to reference
+    # The unified instructions will guide the agent on when to use each section
+    context_parts = [
+        UNIFIED_AGENT_INSTRUCTIONS,
+        GENERAL_CONTEXT,
+        BOOKING_CONTEXT,
+        CONSULTATION_INQUIRY_CONTEXT,
+        PRODUCTS_POOJA_CONTEXT,
+        ESCALATION_CONTEXT,
+    ]
     
-    # Primary intent context
-    if primary_intent == "escalation_needed":
-        # PRIORITY: Escalation overrides everything
-        context_sections.append(ESCALATION_CONTEXT)
-        enable_tools = False  # NEVER enable tools during escalation
-        logger.info("🚨 ESCALATION DETECTED - Loading ESCALATION_CONTEXT, tools disabled")
-    elif primary_intent == "booking":
-        context_sections.append(BOOKING_CONTEXT)
-        enable_tools = True  # Enable calendar tools for booking
-        logger.debug("Loaded BOOKING_CONTEXT, tools enabled")
-    elif primary_intent == "consultation_inquiry":
-        context_sections.append(CONSULTATION_INQUIRY_CONTEXT)
-        logger.debug("Loaded CONSULTATION_INQUIRY_CONTEXT")
-    elif primary_intent == "products_pooja":
-        context_sections.append(PRODUCTS_POOJA_CONTEXT)
-        logger.debug("Loaded PRODUCTS_POOJA_CONTEXT")
-    else:  # general
-        context_sections.append(GENERAL_CONTEXT)
-        logger.debug("Loaded GENERAL_CONTEXT")
+    # Add intent context if available
+    if intent_context:
+        context_parts.append(intent_context)
     
-    # Secondary intent context (for hybrid intents)
-    if secondary_intent:
-        logger.debug(f"Hybrid intent detected, adding secondary context: {secondary_intent}")
-        # If escalation is secondary intent, it should still take priority
-        if secondary_intent == "escalation_needed" and primary_intent != "escalation_needed":
-            logger.warning("Escalation detected as secondary intent - consider escalating")
-            # Don't override primary context but note the escalation concern
-        elif secondary_intent == "booking" and primary_intent != "booking" and primary_intent != "escalation_needed":
-            context_sections.append(BOOKING_CONTEXT)
-            enable_tools = True  # Enable tools if booking is mentioned (unless escalation is primary)
-        elif secondary_intent == "consultation_inquiry" and primary_intent != "consultation_inquiry":
-            context_sections.append(CONSULTATION_INQUIRY_CONTEXT)
-        elif secondary_intent == "products_pooja" and primary_intent != "products_pooja":
-            context_sections.append(PRODUCTS_POOJA_CONTEXT)
+    additional_context = "\n\n---\n\n".join(context_parts)
     
-    # Combine all context sections
-    additional_context = "\n\n---\n\n".join(context_sections)
-    # ===================================================
+    logger.debug(f"📚 [CONVERSATION_NODE] Combined context size: {len(additional_context)} chars")
     
+    # Always enable tools - the unified instructions guide when to use them
+    # The LLM naturally decides based on conversation context
     chain = get_character_response_chain(
         summary=state.get("summary", ""),
-        enable_tools=enable_tools,
+        enable_tools=True,  # Always enabled; LLM decides when to call
         additional_context=additional_context,
-        conversation_stage=conversation_stage,
+        conversation_stage="conversation",  # Simplified: single stage
     )
 
-    logger.debug("conversation_node: invoking character chain (tools_enabled=%s, contexts=%d)", 
-                 enable_tools, len(context_sections))
-    response = await chain.ainvoke(
-        {
-            "messages": state["messages"],
-            "current_activity": current_activity,
-            "memory_context": memory_context,
-            "pooja_context": pooja_context,
-        },
-        config,
-    )
-    logger.debug("conversation_node: character chain completed")
+    logger.info(f"🤖 [CONVERSATION_NODE] Invoking LLM chain for thread {thread_id} (tools: ENABLED)")
+    
+    try:
+        response = await chain.ainvoke(
+            {
+                "messages": state["messages"],
+                "current_activity": current_activity,
+                "memory_context": memory_context,
+                "product_context": product_context,
+            },
+            config,
+        )
+        logger.info(f"✅ [CONVERSATION_NODE] LLM response received for thread {thread_id}")
+    except Exception as e:
+        logger.error(f"❌ [CONVERSATION_NODE] Error invoking LLM chain for thread {thread_id}: {e}", exc_info=True)
+        raise
 
     # Check if response contains tool calls
     if isinstance(response, AIMessage) and response.tool_calls:
-        logger.info(f"Tool calls detected: {[tc['name'] for tc in response.tool_calls]}")
+        tool_names = [tc.get('name') for tc in response.tool_calls]
+        logger.info(
+            f"🛠️ [CONVERSATION_NODE] Tool calls detected for thread {thread_id}: {tool_names}\n"
+            f"  Tool count: {len(response.tool_calls)}"
+        )
         # Return the AIMessage with tool calls (tools_node will execute them)
         return {"messages": [response]}
     
-    # Regular text response handling
-    # When tools are enabled, response is always AIMessage
+    # Regular text response handling with message chunking
     if isinstance(response, AIMessage):
         response_text = response.content
-        # Return the AIMessage as-is to preserve message structure
-        out = {"messages": [response]}
+        logger.info(
+            f"💬 [CONVERSATION_NODE] Text response for thread {thread_id}: "
+            f"{response_text[:100] if response_text else '(empty)'}..."
+        )
+        
+        # Translate to Hindi if needed
+        if should_translate_to_hindi:
+            response_text = translate_response_if_needed(response_text, True)
+            logger.info(f"🇮🇳 [CONVERSATION_NODE] Translated response to Hindi for thread {thread_id}")
+        
+        # Chunk the response into multiple focused messages
+        message_chunks = chunk_response_into_messages(response_text)
+        logger.info(f"📝 [CONVERSATION_NODE] Split response into {len(message_chunks)} messages for thread {thread_id}")
+        
+        # Create multiple AIMessages from chunks
+        chunked_messages = [AIMessage(content=chunk) for chunk in message_chunks if chunk.strip()]
+        out = {"messages": chunked_messages}
+        
     else:
-        # When tools are disabled, response is a string
+        # Fallback for string responses
         response_text = response
-        out = {"messages": [AIMessage(content=response_text)]}
+        logger.warning(
+            f"⚠️ [CONVERSATION_NODE] Received string response (not AIMessage) for thread {thread_id}"
+        )
+        
+        # Translate to Hindi if needed
+        if should_translate_to_hindi:
+            response_text = translate_response_if_needed(response_text, True)
+            logger.info(f"🇮🇳 [CONVERSATION_NODE] Translated string response to Hindi for thread {thread_id}")
+        
+        # Chunk string responses too
+        message_chunks = chunk_response_into_messages(response_text)
+        chunked_messages = [AIMessage(content=chunk) for chunk in message_chunks if chunk.strip()]
+        out = {"messages": chunked_messages}
     
-    # If user asked for QR / payment options, attach image path hint for transport layer
+    # Check if we should attach QR code for payment
+    # This is a special case for Indian UPI payments
     lower_resp = response_text.lower() if isinstance(response_text, str) else str(response_text).lower()
-    attach_qr = any(k in lower_resp for k in ["qr", "upi", "payment options", "payment karna", "scan"]) or any(
-        k in (state["messages"][-1].content.lower() if state.get("messages") else "") for k in ["qr", "upi", "scan"]
-    )
+    user_message = state["messages"][-1].content.lower() if state.get("messages") else ""
+    attach_qr = any(k in lower_resp for k in ["qr", "upi", "payment options", "payment karna", "scan"]) or \
+                any(k in user_message for k in ["qr", "upi", "scan"])
 
     if attach_qr and getattr(settings, "UPI_QR_IMAGE_PATH", None):
         out["attachment_image_path"] = settings.UPI_QR_IMAGE_PATH
+        logger.info(f"📱 [CONVERSATION_NODE] Attaching QR code for payment for thread {thread_id}")
+    
+    logger.info(f"✨ [CONVERSATION_NODE] Completed successfully for thread {thread_id}")
     return out
 
 
@@ -417,7 +478,7 @@ async def image_node(state: AICompanionState, config: RunnableConfig):
     
     current_activity = ScheduleContextGenerator.get_current_activity()
     memory_context = state.get("memory_context", "")
-    pooja_context = state.get("pooja_context", "")
+    product_context = state.get("product_context", "")
     conversation_stage = state.get("conversation_stage", "general_chat")
 
     # Use general context for image generation
@@ -443,7 +504,7 @@ async def image_node(state: AICompanionState, config: RunnableConfig):
             "messages": updated_messages,
             "current_activity": current_activity,
             "memory_context": memory_context,
-            "pooja_context": pooja_context,
+            "product_context": product_context,
         },
         config,
     )
@@ -466,7 +527,7 @@ async def audio_node(state: AICompanionState, config: RunnableConfig):
     
     current_activity = ScheduleContextGenerator.get_current_activity()
     memory_context = state.get("memory_context", "")
-    pooja_context = state.get("pooja_context", "")
+    product_context = state.get("product_context", "")
     
     # Get intent from state to provide appropriate context in audio response
     primary_intent = state.get("primary_intent", "general")
@@ -494,7 +555,7 @@ async def audio_node(state: AICompanionState, config: RunnableConfig):
             "messages": state["messages"],
             "current_activity": current_activity,
             "memory_context": memory_context,
-            "pooja_context": pooja_context,
+            "product_context": product_context,
         },
         config,
     )

@@ -30,6 +30,7 @@ dependencies = [
     "google-auth-httplib2>=0.2.0",
     "google-api-python-client>=2.154.0",
     "pytz>=2024.1",
+    "deep-translator>=1.11.4",
 ]
 
 [tool.ruff]

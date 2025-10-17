@@ -1,7 +1,7 @@
 """Google Calendar integration tools for checking availability and booking events."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time
 from typing import Annotated
 
 from langchain_core.tools import tool
@@ -16,6 +16,77 @@ logger = logging.getLogger(__name__)
 # Global state holders for payment verification
 _payment_verification_state = {}  # thread_id -> bool (verified or not)
 _payment_history = {}  # thread_id -> list of payment amounts
+
+# Allowed time slots for consultations
+ALLOWED_TIME_SLOTS = [
+    (time(9, 0), time(12, 0)),   # 9:00 AM to 12:00 PM
+    (time(14, 0), time(16, 0)),  # 2:00 PM to 4:00 PM  
+    (time(18, 0), time(20, 0)),  # 6:00 PM to 8:00 PM
+]
+
+
+def validate_time_slot(start_dt: datetime, end_dt: datetime) -> tuple[bool, str]:
+    """
+    Validate that the requested time slot falls within allowed consultation hours.
+    
+    Args:
+        start_dt: Start datetime
+        end_dt: End datetime
+        
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    # Extract time components (ignore date)
+    start_time = start_dt.time()
+    end_time = end_dt.time()
+    
+    # Check if start time falls within any allowed slot
+    start_valid = False
+    for slot_start, slot_end in ALLOWED_TIME_SLOTS:
+        if slot_start <= start_time < slot_end:
+            start_valid = True
+            # Check if end time is also within the same slot
+            if end_time <= slot_end:
+                return True, ""
+            else:
+                return False, f"End time {end_time.strftime('%I:%M %p')} extends beyond allowed slot ending at {slot_end.strftime('%I:%M %p')}"
+    
+    if not start_valid:
+        # Format allowed slots for error message
+        allowed_slots_str = ", ".join([
+            f"{slot_start.strftime('%I:%M %p')}-{slot_end.strftime('%I:%M %p')}" 
+            for slot_start, slot_end in ALLOWED_TIME_SLOTS
+        ])
+        return False, f"Start time {start_time.strftime('%I:%M %p')} is not within allowed consultation hours. Available slots: {allowed_slots_str}"
+    
+    return True, ""
+
+
+def get_available_slots_for_date(date: datetime) -> list:
+    """
+    Get all available time slots for a given date.
+    
+    Args:
+        date: The date to check slots for
+        
+    Returns:
+        List of available time slots as (start_time, end_time) tuples
+    """
+    available_slots = []
+    
+    for slot_start, slot_end in ALLOWED_TIME_SLOTS:
+        # Create datetime objects for the specific date
+        start_dt = datetime.combine(date.date(), slot_start)
+        end_dt = datetime.combine(date.date(), slot_end)
+        
+        # Add timezone if the input date has one
+        if date.tzinfo:
+            start_dt = start_dt.replace(tzinfo=date.tzinfo)
+            end_dt = end_dt.replace(tzinfo=date.tzinfo)
+        
+        available_slots.append((start_dt, end_dt))
+    
+    return available_slots
 
 
 @tool
@@ -49,6 +120,11 @@ def check_calendar_availability(
             import pytz
             ist = pytz.timezone('Asia/Kolkata')
             end_dt = ist.localize(end_dt)
+        
+        # Validate time slot is within allowed consultation hours
+        is_valid, error_message = validate_time_slot(start_dt, end_dt)
+        if not is_valid:
+            return f"❌ {error_message}"
         
         # Format for API (RFC3339)
         start_time_formatted = start_dt.isoformat()
@@ -173,6 +249,11 @@ def book_calendar_event(
             ist = pytz.timezone('Asia/Kolkata')
             end_dt = ist.localize(end_dt)
         
+        # Validate time slot is within allowed consultation hours
+        is_valid, error_message = validate_time_slot(start_dt, end_dt)
+        if not is_valid:
+            return f"❌ {error_message}"
+        
         # Format for API
         start_time_formatted = start_dt.isoformat()
         end_time_formatted = end_dt.isoformat()
@@ -276,9 +357,93 @@ def book_calendar_event(
         return f"❌ Error booking calendar event: {str(e)}"
 
 
+@tool
+def get_available_consultation_slots(
+    date: Annotated[str, "Date in YYYY-MM-DD format (e.g., '2025-10-15')"],
+    timezone_str: Annotated[str, "Timezone (e.g., 'Asia/Kolkata')"] = "Asia/Kolkata"
+) -> str:
+    """
+    Get all available consultation time slots for a specific date.
+    
+    This tool shows the standard consultation hours and checks which slots
+    are available on the calendar for booking.
+    
+    Args:
+        date: The date to check in YYYY-MM-DD format
+        timezone_str: Timezone for the date (defaults to Asia/Kolkata)
+    
+    Returns:
+        A formatted message showing available time slots
+    """
+    logger.info(f"Getting available consultation slots for {date}")
+    
+    try:
+        import pytz
+        
+        # Parse the date
+        date_obj = datetime.strptime(date, '%Y-%m-%d').date()
+        
+        # Get timezone
+        tz = pytz.timezone(timezone_str)
+        
+        # Create datetime for the start of the day
+        day_start = tz.localize(datetime.combine(date_obj, time(0, 0)))
+        
+        # Get all possible consultation slots for this date
+        available_slots = get_available_slots_for_date(day_start)
+        
+        # Check each slot against the calendar
+        service = get_calendar_service()
+        available_slots_info = []
+        
+        for slot_start, slot_end in available_slots:
+            # Check if this slot is free
+            events_result = service.events().list(
+                calendarId='primary',
+                timeMin=slot_start.isoformat(),
+                timeMax=slot_end.isoformat(),
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            
+            events = events_result.get('items', [])
+            
+            if not events:
+                # Slot is available
+                start_time_str = slot_start.strftime('%I:%M %p')
+                end_time_str = slot_end.strftime('%I:%M %p')
+                available_slots_info.append(f"✅ {start_time_str} - {end_time_str}")
+            else:
+                # Slot is booked
+                start_time_str = slot_start.strftime('%I:%M %p')
+                end_time_str = slot_end.strftime('%I:%M %p')
+                event_summary = events[0].get('summary', 'Booked')
+                available_slots_info.append(f"❌ {start_time_str} - {end_time_str} (Booked: {event_summary})")
+        
+        # Format the response
+        date_formatted = day_start.strftime('%A, %B %d, %Y')
+        slots_text = "\n".join(available_slots_info)
+        
+        return (
+            f"📅 Available consultation slots for {date_formatted}:\n\n"
+            f"{slots_text}\n\n"
+            f"💡 Standard consultation hours:\n"
+            f"• Morning: 9:00 AM - 12:00 PM\n"
+            f"• Afternoon: 2:00 PM - 4:00 PM\n"
+            f"• Evening: 6:00 PM - 8:00 PM"
+        )
+        
+    except ValueError as e:
+        logger.error(f"Invalid date format: {e}")
+        return f"❌ Error: Invalid date format. Please use YYYY-MM-DD format (e.g., '2025-10-15'). Details: {str(e)}"
+    except Exception as e:
+        logger.error(f"Error getting available slots: {str(e)}", exc_info=True)
+        return f"❌ Error getting available consultation slots: {str(e)}"
+
+
 def get_calendar_tools():
     """Return a list of all calendar tools."""
-    return [check_calendar_availability, book_calendar_event]
+    return [check_calendar_availability, book_calendar_event, get_available_consultation_slots]
 
 
 def set_payment_verified(thread_id: str, verified: bool = True):

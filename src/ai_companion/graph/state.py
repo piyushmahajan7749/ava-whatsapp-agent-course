@@ -3,44 +3,40 @@ from typing import Optional
 
 
 class AICompanionState(MessagesState):
-    """State class for the AI Companion workflow.
+    """Simplified state class for the unified AI Companion agent.
 
-    Extends MessagesState to track conversation history and maintains the last message received.
+    Extends MessagesState to track conversation history and domain-specific context.
+    Removes router-specific fields in favor of a single conversational agent that 
+    naturally infers intent and uses tools as needed.
 
     Attributes:
-        last_message (AnyMessage): The most recent message in the conversation, can be any valid
-            LangChain message type (HumanMessage, AIMessage, etc.)
-        workflow (str): The current workflow the AI Companion is in. Can be "conversation", "image", or "audio".
-        audio_buffer (bytes): The audio buffer to be used for speech-to-text conversion.
-        current_activity (str): The current activity of Ava based on the schedule.
-        memory_context (str): The context of the memories to be injected into the character card.
-        payment_verified (bool): Whether the user has submitted a valid payment screenshot.
-        
-        # Enhanced routing fields:
-        primary_intent (str): Primary intent detected by router (booking/consultation_inquiry/products_pooja/general)
-        secondary_intent (Optional[str]): Secondary intent if hybrid intent detected
-        confidence (float): Confidence score for intent classification (0.0 to 1.0)
-        conversation_stage (str): Current stage in customer journey (inquiry/interested/payment_verified/etc.)
+        summary (str): Rolling conversation summary for context management
+        audio_buffer (bytes): Audio buffer for speech-to-text conversion
+        image_path (str): Path to generated images (if any)
+        attachment_image_path (str): Path to attachments to send (e.g., QR codes)
+        current_activity (str): Ava's current activity based on schedule
+        apply_activity (bool): Whether to apply the current activity context
+        memory_context (str): User-specific memories to inject into prompts
+        product_context (str): Relevant product/service context detected from conversation (pooja, products, packages, services)
+        intent_context (str): AI-classified intent and conversation stage context
+        payment_verified (bool): Whether valid payment has been verified
+        payment_amount (Optional[int]): Total payment amount verified (including split payments)
+        payment_status (Optional[str]): Payment verification status (verified_full/partial_payment/verification_failed)
+        payment_remaining (Optional[int]): Remaining amount for split payments
     """
 
     summary: str
-    workflow: str
     audio_buffer: bytes
     image_path: str
     attachment_image_path: str
     current_activity: str
     apply_activity: bool
     memory_context: str
-    pooja_context: str
+    product_context: str
+    intent_context: str
     payment_verified: bool
     
-    # Enhanced routing fields
-    primary_intent: str
-    secondary_intent: Optional[str]
-    confidence: float
-    conversation_stage: str
-    
     # Payment verification details
-    payment_amount: Optional[int]  # Extracted payment amount (total if split payments)
-    payment_status: Optional[str]  # verified_full/partial_payment/amount_mismatch/verification_failed
-    payment_remaining: Optional[int]  # Remaining amount for split payments
+    payment_amount: Optional[int]
+    payment_status: Optional[str]
+    payment_remaining: Optional[int]

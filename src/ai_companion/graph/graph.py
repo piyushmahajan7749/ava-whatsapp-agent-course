@@ -1,62 +1,87 @@
 from functools import lru_cache
 
 from langgraph.graph import END, START, StateGraph
+import logging
 
 from ai_companion.graph.edges import (
     route_after_conversation,
-    select_workflow,
     should_summarize_conversation,
 )
 from ai_companion.graph.nodes import (
     audio_node,
     context_injection_node,
-    pooja_injection_node,
+    product_injection_node,
+    intent_classification_node,
     payment_verification_node,
     conversation_node,
     image_node,
     memory_extraction_node,
     memory_injection_node,
-    router_node,
     summarize_conversation_node,
     tools_node,
 )
 from ai_companion.graph.state import AICompanionState
 
 
+logger = logging.getLogger(__name__)
+
+
 @lru_cache(maxsize=1)
 def create_workflow_graph():
+    """
+    Create simplified workflow graph with unified conversational agent.
+    
+    Flow:
+    1. Memory extraction → Extract user preferences and info
+    2. Context injection → Add schedule context
+    3. Product injection → Add product/service context (pooja, products, packages, services)
+    4. Payment verification → Check for payment screenshots
+    5. Memory injection → Retrieve relevant memories
+    6. Conversation node → Unified agent handles all interactions
+    7. Tool execution (if needed) → Execute calendar/other tools
+    8. Summarization (if needed) → Compress long conversations
+    
+    Removed:
+    - Router node (intent is now inferred naturally by the LLM)
+    - Workflow selection (no more audio/image/text branching)
+    - Complex conditional logic (simplified to single conversation path)
+    """
+    logger.info("🏗️ [GRAPH] Creating simplified workflow graph...")
+    
     graph_builder = StateGraph(AICompanionState)
 
-    # Add all nodes
+    # Add nodes - simplified to single conversation path
     graph_builder.add_node("memory_extraction_node", memory_extraction_node)
-    graph_builder.add_node("router_node", router_node)
     graph_builder.add_node("context_injection_node", context_injection_node)
-    graph_builder.add_node("pooja_injection_node", pooja_injection_node)
+    graph_builder.add_node("product_injection_node", product_injection_node)
+    graph_builder.add_node("intent_classification_node", intent_classification_node)
     graph_builder.add_node("payment_verification_node", payment_verification_node)
     graph_builder.add_node("memory_injection_node", memory_injection_node)
     graph_builder.add_node("conversation_node", conversation_node)
+    graph_builder.add_node("tools_node", tools_node)
+    graph_builder.add_node("summarize_conversation_node", summarize_conversation_node)
+    
+    # Legacy nodes kept for compatibility (may be used by other interfaces)
     graph_builder.add_node("image_node", image_node)
     graph_builder.add_node("audio_node", audio_node)
-    graph_builder.add_node("tools_node", tools_node)  # New: Tool execution node
-    graph_builder.add_node("summarize_conversation_node", summarize_conversation_node)
 
-    # Define the flow
-    # First extract memories from user message
+    # Define simplified linear flow
+    logger.debug("🔗 [GRAPH] Building node connections...")
+    
+    # 1. Extract memories from user message
     graph_builder.add_edge(START, "memory_extraction_node")
 
-    # Then determine response type
-    graph_builder.add_edge("memory_extraction_node", "router_node")
-
-    # Then inject both context and memories
-    graph_builder.add_edge("router_node", "context_injection_node")
-    graph_builder.add_edge("context_injection_node", "pooja_injection_node")
-    graph_builder.add_edge("pooja_injection_node", "payment_verification_node")
+    # 2. Inject all contextual information (no routing needed)
+    graph_builder.add_edge("memory_extraction_node", "context_injection_node")
+    graph_builder.add_edge("context_injection_node", "product_injection_node")
+    graph_builder.add_edge("product_injection_node", "intent_classification_node")
+    graph_builder.add_edge("intent_classification_node", "payment_verification_node")
     graph_builder.add_edge("payment_verification_node", "memory_injection_node")
 
-    # Then proceed to appropriate response node
-    graph_builder.add_conditional_edges("memory_injection_node", select_workflow)
+    # 3. Single conversation node handles everything
+    graph_builder.add_edge("memory_injection_node", "conversation_node")
 
-    # After conversation_node, check if tools were called
+    # 4. After conversation, check if tools were called
     # If yes -> execute tools -> loop back to conversation_node
     # If no -> proceed to summarization check
     graph_builder.add_conditional_edges(
@@ -68,19 +93,21 @@ def create_workflow_graph():
         }
     )
     
-    # After tools execute, loop back to conversation_node to let LLM respond with results
+    # 5. After tools execute, loop back to conversation_node for LLM to respond with results
     graph_builder.add_edge("tools_node", "conversation_node")
     
-    # Create a separate "should_summarize" node for routing
-    # (We use a lambda as a passthrough since we need a named target)
+    # 6. Summarization routing
     graph_builder.add_node("should_summarize", lambda state: {})
     graph_builder.add_conditional_edges("should_summarize", should_summarize_conversation)
 
-    # Check for summarization after image and audio responses
+    # 7. Legacy: Check for summarization after image and audio responses (if still used)
     graph_builder.add_conditional_edges("image_node", should_summarize_conversation)
     graph_builder.add_conditional_edges("audio_node", should_summarize_conversation)
+    
+    # 8. End flow after summarization
     graph_builder.add_edge("summarize_conversation_node", END)
 
+    logger.info("✅ [GRAPH] Workflow graph created successfully")
     return graph_builder
 
 

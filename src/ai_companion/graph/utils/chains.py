@@ -83,7 +83,7 @@ def get_character_response_chain(
     from datetime import datetime
     import pytz
     
-    model = get_chat_model()
+    model = get_chat_model(temperature=0.7, max_tokens=150)  # Optimized for short, focused messages
     
     # Bind tools if enabled
     if enable_tools:
