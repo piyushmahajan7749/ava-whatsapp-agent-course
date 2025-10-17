@@ -46,17 +46,23 @@ az acr build \
 
 log_success "Image built and pushed"
 
-# Container App will auto-update, but we can force it
-log_info "Triggering container app update..."
+# Get commit hash for unique image tag
+COMMIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || date +%s)
 ACR_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
 
+# Force container app update with specific commit hash
+log_info "Triggering container app update with commit $COMMIT_HASH..."
 az containerapp update \
     --name "$CONTAINER_APP" \
     --resource-group "$RESOURCE_GROUP" \
-    --image "$ACR_SERVER/ava-whatsapp:latest" \
+    --image "$ACR_SERVER/ava-whatsapp:$COMMIT_HASH" \
     --output none
 
 log_success "Container app updated"
+
+# Wait for deployment to complete
+log_info "Waiting for deployment to complete..."
+sleep 10
 
 # Get URL
 APP_URL=$(az containerapp show \
@@ -67,6 +73,7 @@ APP_URL=$(az containerapp show \
 
 echo ""
 log_success "Update complete! Application URL: https://$APP_URL"
+log_info "Deployed commit: $COMMIT_HASH"
 echo ""
 log_info "To view logs:"
 echo "  az containerapp logs show --name $CONTAINER_APP --resource-group $RESOURCE_GROUP --follow"

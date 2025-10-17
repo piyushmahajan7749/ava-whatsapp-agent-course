@@ -29,6 +29,10 @@ ENV VIRTUAL_ENV=/app/.venv \
 # Install the package in editable mode
 RUN uv pip install -e .
 
+# Copy Google Calendar credentials
+COPY credentials.json /app/credentials.json
+COPY token.json /app/token.json
+
 # Define volumes
 VOLUME ["/app/data"]
 

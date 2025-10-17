@@ -103,3 +103,7 @@ azure-delete:
 		rm -f azure-deployment-config.txt; \
 		echo "Azure resources deletion initiated"; \
 	fi
+
+azure-cleanup:
+	@chmod +x azure-cleanup.sh
+	./azure-cleanup.sh

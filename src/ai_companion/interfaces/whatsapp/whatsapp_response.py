@@ -154,9 +154,35 @@ async def whatsapp_handler(request: Request) -> Response:
                 raise
 
             workflow = output_state.values.get("workflow", "conversation")
-            response_message = output_state.values["messages"][-1].content
+            
+            # Extract ALL AI messages from the current conversation turn
+            # The conversation_node creates multiple AIMessages when chunking responses
+            all_messages = output_state.values["messages"]
+            ai_messages = [msg for msg in all_messages if hasattr(msg, 'content') and msg.__class__.__name__ == 'AIMessage']
+            
+            # Get the most recent AI messages (from current turn)
+            # Find where the user message starts to get only the AI response
+            user_message_index = -1
+            for i, msg in enumerate(all_messages):
+                if hasattr(msg, 'content') and msg.__class__.__name__ == 'HumanMessage':
+                    user_message_index = i
+                    break
+            
+            # Get AI messages after the last user message
+            recent_ai_messages = []
+            if user_message_index >= 0:
+                recent_ai_messages = [msg for msg in all_messages[user_message_index+1:] 
+                                    if hasattr(msg, 'content') and msg.__class__.__name__ == 'AIMessage']
+            else:
+                # Fallback: get all AI messages
+                recent_ai_messages = ai_messages
+            
+            # Combine all AI message chunks into a single response
+            response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
+            
             attachment_image_path = output_state.values.get("attachment_image_path")
-            logger.info("Graph output: workflow=%s, response_preview='%s'", workflow, response_message[:200])
+            logger.info("Graph output: workflow=%s, ai_messages_count=%d, response_preview='%s'", 
+                       workflow, len(recent_ai_messages), response_message[:200])
 
             # Check if AI should respond (Chatwoot handoff detection)
             should_ai_reply = True

@@ -382,7 +382,7 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
     # The LLM naturally decides based on conversation context
     chain = get_character_response_chain(
         summary=state.get("summary", ""),
-        enable_tools=True,  # Always enabled; LLM decides when to call
+        enable_tools=True,  # Re-enabled with credentials in Docker
         additional_context=additional_context,
         conversation_stage="conversation",  # Simplified: single stage
     )
