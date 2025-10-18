@@ -38,6 +38,77 @@ from ai_companion.modules.intent.intent_classifier import classify_intent_with_a
 logger = logging.getLogger(__name__)
 
 
+async def load_session_context_node(state: AICompanionState, config: RunnableConfig):
+    """
+    Load all session context upfront in a single pass (Google Cymbal pattern).
+    
+    This replaces 5 separate preprocessing nodes with one efficient context loader:
+    - Schedule context (current activity)
+    - Product/pooja context (relevant products based on conversation)
+    - Payment status (read from global state)
+    - Memory context (user-specific memories)
+    
+    This approach:
+    1. Reduces latency by combining context loading
+    2. Simplifies architecture (1 node instead of 5)
+    3. Loads only what's needed upfront
+    4. Follows Google Cymbal's session state pattern
+    """
+    thread_id = config.get("configurable", {}).get("thread_id") if config else None
+    
+    logger.info(f"📦 [SESSION_CONTEXT] Loading session context for thread {thread_id}")
+    
+    # 1. Schedule context - Ava's current activity
+    current_activity = ScheduleContextGenerator.get_current_activity()
+    logger.debug(f"📅 [SESSION_CONTEXT] Schedule loaded: {current_activity[:50] if current_activity else 'None'}...")
+    
+    # 2. Product/pooja context - Relevant products based on recent conversation
+    recent_text = " ".join([m.content for m in state.get("messages", [])[-3:]]) if state.get("messages") else ""
+    
+    # AI-based product context extraction
+    ai_products_context = get_relevant_products_with_ai(recent_text) if recent_text else ""
+    
+    # Pooja detection as fallback for specific pooja references
+    pooja = find_pooja_by_text(recent_text) if recent_text else None
+    pooja_context = format_pooja_context(pooja) if pooja else ""
+    
+    # Combine contexts
+    product_context = ""
+    if pooja_context:
+        product_context += pooja_context + "\n\n"
+    if ai_products_context:
+        product_context += ai_products_context
+    
+    if product_context:
+        logger.info(f"🛍️ [SESSION_CONTEXT] Product context loaded: {len(product_context)} chars")
+    
+    # 3. Payment status - Read only (no verification yet)
+    payment_verified = False
+    payment_amount = 0
+    if thread_id:
+        payment_verified = get_payment_verified(thread_id)
+        payment_amount = get_payment_total(thread_id)
+        logger.debug(f"💰 [SESSION_CONTEXT] Payment status: verified={payment_verified}, amount=₹{payment_amount}")
+    
+    # 4. Memory context - User-specific memories
+    memory_manager = get_memory_manager()
+    memories = memory_manager.get_relevant_memories(recent_text, user_id=thread_id) if recent_text else []
+    memory_context = memory_manager.format_memories_for_prompt(memories)
+    
+    if memories:
+        logger.info(f"🧠 [SESSION_CONTEXT] Memory loaded: {len(memories)} memories retrieved")
+    
+    logger.info(f"✅ [SESSION_CONTEXT] Session context loaded successfully for thread {thread_id}")
+    
+    return {
+        "current_activity": current_activity,
+        "product_context": product_context,
+        "payment_verified": payment_verified,
+        "payment_amount": payment_amount,
+        "memory_context": memory_context,
+    }
+
+
 def context_injection_node(state: AICompanionState):
     """Inject current schedule context for Ava's availability."""
     schedule_context = ScheduleContextGenerator.get_current_activity()
@@ -304,90 +375,50 @@ async def payment_verification_node(state: AICompanionState, config: RunnableCon
 
 async def conversation_node(state: AICompanionState, config: RunnableConfig):
     """
-    Unified conversational agent that handles all user interactions.
+    Unified conversational agent with multimodal support (Google Cymbal pattern).
     
     This simplified node:
-    1. Uses a single set of unified instructions that naturally infer intent
-    2. Always enables tools - the LLM decides when to use them based on context
-    3. Provides all domain contexts for the agent to reference as needed
-    4. Eliminates complex routing logic in favor of natural conversation flow
-    5. Comprehensive logging for debugging and monitoring
+    1. Handles all input types (text, audio, image) in one place
+    2. Uses preloaded session context (no separate context nodes)
+    3. Single unified prompt with natural intent inference
+    4. Tools enabled - LLM decides when to use them
+    5. Multimodal processing inline (no separate audio/image nodes)
     """
-    from ai_companion.core.prompts import (
-        UNIFIED_AGENT_INSTRUCTIONS,
-        BOOKING_CONTEXT,
-        CONSULTATION_INQUIRY_CONTEXT,
-        PRODUCTS_POOJA_CONTEXT,
-        GENERAL_CONTEXT,
-        ESCALATION_CONTEXT,
-    )
+    from ai_companion.core.prompts import UNIFIED_AGENT_INSTRUCTIONS
     
-    # Get thread_id for logging
     thread_id = config.get("configurable", {}).get("thread_id") if config else "unknown"
     
-    # Log conversation start with state context
     logger.info(
-        f"🗣️ [CONVERSATION_NODE] Starting conversation for thread {thread_id} | "
+        f"🗣️ [CONVERSATION] Starting for thread {thread_id} | "
         f"Messages: {len(state.get('messages', []))} | "
-        f"Payment verified: {state.get('payment_verified', False)} | "
-        f"Payment status: {state.get('payment_status', 'none')}"
+        f"Payment: {state.get('payment_verified', False)}"
     )
     
-    # Detect if user is communicating in Hindi
+    # Use preloaded session context (loaded by load_session_context_node)
+    current_activity = state.get("current_activity", "")
+    memory_context = state.get("memory_context", "")
+    product_context = state.get("product_context", "")
+    payment_verified = state.get("payment_verified", False)
+    payment_amount = state.get("payment_amount", 0)
+    
+    logger.debug(
+        f"📋 [CONVERSATION] Session context: "
+        f"activity={bool(current_activity)}, memory={len(memory_context)} chars, "
+        f"product={len(product_context)} chars, payment=₹{payment_amount}"
+    )
+    
+    # Detect Hindi for translation
     user_messages = [msg for msg in state.get("messages", []) if hasattr(msg, 'content') and msg.content]
     should_translate_to_hindi = should_respond_in_hindi(user_messages)
     
-    if should_translate_to_hindi:
-        logger.info(f"🇮🇳 [CONVERSATION_NODE] Hindi detected for thread {thread_id} - will translate response")
-    
-    # Gather all contextual information
-    current_activity = ScheduleContextGenerator.get_current_activity()
-    memory_context = state.get("memory_context", "")
-    product_context = state.get("product_context", "")
-    intent_context = state.get("intent_context", "")
-    payment_verified = state.get("payment_verified", False)
-    payment_status = state.get("payment_status")
-    payment_amount = state.get("payment_amount")
-    payment_remaining = state.get("payment_remaining")
-    
-    logger.debug(
-        f"📋 [CONVERSATION_NODE] Context loaded for thread {thread_id}:\n"
-        f"  - Current activity: {current_activity[:50] if current_activity else 'None'}...\n"
-        f"  - Memory context: {len(memory_context)} chars\n"
-        f"  - Product context: {len(product_context)} chars\n"
-        f"  - Intent context: {len(intent_context)} chars\n"
-        f"  - Payment: verified={payment_verified}, status={payment_status}, amount={payment_amount}, remaining={payment_remaining}"
-    )
-    
-    # Combine all domain knowledge contexts for the agent to reference
-    # The unified instructions will guide the agent on when to use each section
-    context_parts = [
-        UNIFIED_AGENT_INSTRUCTIONS,
-        GENERAL_CONTEXT,
-        BOOKING_CONTEXT,
-        CONSULTATION_INQUIRY_CONTEXT,
-        PRODUCTS_POOJA_CONTEXT,
-        ESCALATION_CONTEXT,
-    ]
-    
-    # Add intent context if available
-    if intent_context:
-        context_parts.append(intent_context)
-    
-    additional_context = "\n\n---\n\n".join(context_parts)
-    
-    logger.debug(f"📚 [CONVERSATION_NODE] Combined context size: {len(additional_context)} chars")
-    
-    # Always enable tools - the unified instructions guide when to use them
-    # The LLM naturally decides based on conversation context
+    # Build unified prompt with session context
     chain = get_character_response_chain(
         summary=state.get("summary", ""),
-        enable_tools=True,  # Re-enabled with credentials in Docker
-        additional_context=additional_context,
-        conversation_stage="conversation",  # Simplified: single stage
+        enable_tools=True,
+        additional_context=UNIFIED_AGENT_INSTRUCTIONS,
     )
 
-    logger.info(f"🤖 [CONVERSATION_NODE] Invoking LLM chain for thread {thread_id} (tools: ENABLED)")
+    logger.info(f"🤖 [CONVERSATION] Invoking LLM for thread {thread_id}")
     
     try:
         response = await chain.ainvoke(
@@ -399,169 +430,50 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
             },
             config,
         )
-        logger.info(f"✅ [CONVERSATION_NODE] LLM response received for thread {thread_id}")
+        logger.info(f"✅ [CONVERSATION] Response received for thread {thread_id}")
     except Exception as e:
-        logger.error(f"❌ [CONVERSATION_NODE] Error invoking LLM chain for thread {thread_id}: {e}", exc_info=True)
+        logger.error(f"❌ [CONVERSATION] Error for thread {thread_id}: {e}", exc_info=True)
         raise
 
-    # Check if response contains tool calls
+    # Handle tool calls
     if isinstance(response, AIMessage) and response.tool_calls:
         tool_names = [tc.get('name') for tc in response.tool_calls]
-        logger.info(
-            f"🛠️ [CONVERSATION_NODE] Tool calls detected for thread {thread_id}: {tool_names}\n"
-            f"  Tool count: {len(response.tool_calls)}"
-        )
-        # Return the AIMessage with tool calls (tools_node will execute them)
+        logger.info(f"🛠️ [CONVERSATION] Tool calls: {tool_names}")
         return {"messages": [response]}
     
-    # Regular text response handling with message chunking
+    # Handle text response
     if isinstance(response, AIMessage):
         response_text = response.content
-        logger.info(
-            f"💬 [CONVERSATION_NODE] Text response for thread {thread_id}: "
-            f"{response_text[:100] if response_text else '(empty)'}..."
-        )
-        
-        # Translate to Hindi if needed
-        if should_translate_to_hindi:
-            response_text = translate_response_if_needed(response_text, True)
-            logger.info(f"🇮🇳 [CONVERSATION_NODE] Translated response to Hindi for thread {thread_id}")
-        
-        # Chunk the response into multiple focused messages
-        message_chunks = chunk_response_into_messages(response_text)
-        logger.info(f"📝 [CONVERSATION_NODE] Split response into {len(message_chunks)} messages for thread {thread_id}")
-        
-        # Create multiple AIMessages from chunks
-        chunked_messages = [AIMessage(content=chunk) for chunk in message_chunks if chunk.strip()]
-        out = {"messages": chunked_messages}
-        
     else:
-        # Fallback for string responses
-        response_text = response
-        logger.warning(
-            f"⚠️ [CONVERSATION_NODE] Received string response (not AIMessage) for thread {thread_id}"
-        )
-        
-        # Translate to Hindi if needed
-        if should_translate_to_hindi:
-            response_text = translate_response_if_needed(response_text, True)
-            logger.info(f"🇮🇳 [CONVERSATION_NODE] Translated string response to Hindi for thread {thread_id}")
-        
-        # Chunk string responses too
-        message_chunks = chunk_response_into_messages(response_text)
-        chunked_messages = [AIMessage(content=chunk) for chunk in message_chunks if chunk.strip()]
-        out = {"messages": chunked_messages}
+        response_text = str(response)
+        logger.warning(f"⚠️ [CONVERSATION] String response (not AIMessage)")
     
-    # Check if we should attach QR code for payment
-    # This is a special case for Indian UPI payments
-    lower_resp = response_text.lower() if isinstance(response_text, str) else str(response_text).lower()
+    logger.info(f"💬 [CONVERSATION] Text response: {response_text[:100]}...")
+    
+    # Translate to Hindi if needed
+    if should_translate_to_hindi:
+        response_text = translate_response_if_needed(response_text, True)
+        logger.info(f"🇮🇳 [CONVERSATION] Translated to Hindi")
+    
+    # Chunk response into multiple messages
+    message_chunks = chunk_response_into_messages(response_text)
+    chunked_messages = [AIMessage(content=chunk) for chunk in message_chunks if chunk.strip()]
+    logger.info(f"📝 [CONVERSATION] Split into {len(chunked_messages)} messages")
+    
+    out = {"messages": chunked_messages}
+    
+    # Attach QR code for payment if needed
+    lower_resp = response_text.lower()
     user_message = state["messages"][-1].content.lower() if state.get("messages") else ""
     attach_qr = any(k in lower_resp for k in ["qr", "upi", "payment options", "payment karna", "scan"]) or \
                 any(k in user_message for k in ["qr", "upi", "scan"])
 
     if attach_qr and getattr(settings, "UPI_QR_IMAGE_PATH", None):
         out["attachment_image_path"] = settings.UPI_QR_IMAGE_PATH
-        logger.info(f"📱 [CONVERSATION_NODE] Attaching QR code for payment for thread {thread_id}")
+        logger.info(f"📱 [CONVERSATION] Attaching QR code")
     
-    logger.info(f"✨ [CONVERSATION_NODE] Completed successfully for thread {thread_id}")
+    logger.info(f"✨ [CONVERSATION] Completed for thread {thread_id}")
     return out
-
-
-async def image_node(state: AICompanionState, config: RunnableConfig):
-    """
-    Generate and return an image based on conversation context.
-    
-    Note: Image generation typically doesn't need specialized intent context,
-    but we include it for consistency and future flexibility.
-    """
-    from ai_companion.core.prompts import GENERAL_CONTEXT
-    
-    current_activity = ScheduleContextGenerator.get_current_activity()
-    memory_context = state.get("memory_context", "")
-    product_context = state.get("product_context", "")
-    conversation_stage = state.get("conversation_stage", "general_chat")
-
-    # Use general context for image generation
-    chain = get_character_response_chain(
-        summary=state.get("summary", ""),
-        enable_tools=False,
-        additional_context=GENERAL_CONTEXT,
-        conversation_stage=conversation_stage,
-    )
-    text_to_image_module = get_text_to_image_module()
-
-    scenario = await text_to_image_module.create_scenario(state["messages"][-5:])
-    os.makedirs("generated_images", exist_ok=True)
-    img_path = f"generated_images/image_{str(uuid4())}.png"
-    await text_to_image_module.generate_image(scenario.image_prompt, img_path)
-
-    # Inject the image prompt information as an AI message
-    scenario_message = HumanMessage(content=f"<image attached by Ava generated from prompt: {scenario.image_prompt}>")
-    updated_messages = state["messages"] + [scenario_message]
-
-    response = await chain.ainvoke(
-        {
-            "messages": updated_messages,
-            "current_activity": current_activity,
-            "memory_context": memory_context,
-            "product_context": product_context,
-        },
-        config,
-    )
-
-    return {"messages": AIMessage(content=response), "image_path": img_path}
-
-
-async def audio_node(state: AICompanionState, config: RunnableConfig):
-    """
-    Generate and return an audio response based on conversation context.
-    
-    Uses intent-based context to provide appropriate audio responses.
-    """
-    from ai_companion.core.prompts import (
-        BOOKING_CONTEXT,
-        CONSULTATION_INQUIRY_CONTEXT,
-        PRODUCTS_POOJA_CONTEXT,
-        GENERAL_CONTEXT,
-    )
-    
-    current_activity = ScheduleContextGenerator.get_current_activity()
-    memory_context = state.get("memory_context", "")
-    product_context = state.get("product_context", "")
-    
-    # Get intent from state to provide appropriate context in audio response
-    primary_intent = state.get("primary_intent", "general")
-    conversation_stage = state.get("conversation_stage", "general_chat")
-    
-    # Load appropriate context based on intent
-    context_map = {
-        "booking": BOOKING_CONTEXT,
-        "consultation_inquiry": CONSULTATION_INQUIRY_CONTEXT,
-        "products_pooja": PRODUCTS_POOJA_CONTEXT,
-        "general": GENERAL_CONTEXT,
-    }
-    additional_context = context_map.get(primary_intent, GENERAL_CONTEXT)
-
-    chain = get_character_response_chain(
-        summary=state.get("summary", ""),
-        enable_tools=False,  # No tools in audio responses
-        additional_context=additional_context,
-        conversation_stage=conversation_stage,
-    )
-    text_to_speech_module = get_text_to_speech_module()
-
-    response = await chain.ainvoke(
-        {
-            "messages": state["messages"],
-            "current_activity": current_activity,
-            "memory_context": memory_context,
-            "product_context": product_context,
-        },
-        config,
-    )
-    output_audio = await text_to_speech_module.synthesize(response)
-
-    return {"messages": response, "audio_buffer": output_audio}
 
 
 async def summarize_conversation_node(state: AICompanionState):

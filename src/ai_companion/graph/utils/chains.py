@@ -64,17 +64,18 @@ def get_router_chain():
 def get_character_response_chain(
     summary: str = "", 
     enable_tools: bool = False,
-    additional_context: str = "",
-    conversation_stage: str = ""
+    additional_context: str = ""
 ):
     """
-    Get the character response chain with optional tool calling support and dynamic context.
+    Get the character response chain with optional tool calling support (Google Cymbal pattern).
+    
+    Simplified from previous version - removed conversation_stage parameter in favor of
+    natural intent inference by the LLM. All domain knowledge is now in UNIFIED_AGENT_INSTRUCTIONS.
     
     Args:
         summary: Conversation summary to include in the prompt
         enable_tools: If True, bind calendar tools to the model for tool calling
-        additional_context: Intent-specific context sections to inject (e.g., BOOKING_CONTEXT)
-        conversation_stage: Current stage in customer journey (inquiry, payment_verified, etc.)
+        additional_context: Unified agent instructions with all domain knowledge
     
     Returns:
         A chain that can generate character responses (with or without tool calls)
@@ -91,7 +92,7 @@ def get_character_response_chain(
         model = model.bind_tools(tools)
     
     def format_system_message(inputs):
-        """Format the system message with dynamic context."""
+        """Format the system message with session context."""
         system_message = CHARACTER_CARD_PROMPT
         
         # Add current date/time context in IST
@@ -113,31 +114,21 @@ def get_character_response_chain(
         )
 
         if summary:
-            system_message += f"\n\nSummary of conversation earlier between Ava and the user: {summary}"
+            system_message += f"\n\nSummary of conversation earlier: {summary}"
         
-        # Add dynamic context
+        # Add session-loaded context (loaded by load_session_context_node)
         if inputs.get("current_activity"):
             system_message += f"\n\nCurrent Activity: {inputs['current_activity']}"
         
         if inputs.get("memory_context"):
             system_message += f"\n\nRelevant Memories: {inputs['memory_context']}"
         
-        if inputs.get("pooja_context"):
-            system_message += f"\n\nPooja Context: {inputs['pooja_context']}"
+        if inputs.get("product_context"):
+            system_message += f"\n\nProduct Context: {inputs['product_context']}"
         
-        # ============= NEW: INTENT-BASED CONTEXT INJECTION =============
-        # Inject specialized context based on intent
+        # Add unified agent instructions with all domain knowledge
         if additional_context:
             system_message += f"\n\n{additional_context}"
-        
-        # Add conversation stage context if available
-        if conversation_stage:
-            system_message += f"\n\n**Current Conversation Stage:** {conversation_stage}"
-            system_message += (
-                "\nUse this stage information to provide contextually appropriate responses. "
-                "For example, if stage is 'payment_verified', focus on collecting booking details."
-            )
-        # ================================================================
         
         if enable_tools:
             system_message += (
@@ -145,6 +136,7 @@ def get_character_response_chain(
                 "When users ask about scheduling, availability, or booking, use the appropriate tools:\n"
                 "- check_calendar_availability: Check if a time slot is free\n"
                 "- book_calendar_event: Book an event in the calendar\n"
+                "- get_available_consultation_slots: Get all available slots for a specific date\n"
                 "\n**CRITICAL TIMEZONE INSTRUCTIONS:**\n"
                 "- All times mentioned by users are in IST (Indian Standard Time, UTC+5:30)\n"
                 "- When calling calendar tools, provide times in ISO format WITH IST offset\n"

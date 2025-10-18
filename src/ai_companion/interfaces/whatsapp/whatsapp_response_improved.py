@@ -41,6 +41,8 @@ from ai_companion.interfaces.whatsapp.status_indicators import (
     mark_processing_start,
     mark_processing_complete,
     start_cleanup_task,
+    send_typing_indicator,
+    send_processing_status,
 )
 
 # Configure logging with detailed format
@@ -70,6 +72,7 @@ ENABLE_READ_RECEIPTS = os.getenv("ENABLE_READ_RECEIPTS", "true").lower() == "tru
 ENABLE_EMOJI_REACTIONS = os.getenv("ENABLE_EMOJI_REACTIONS", "true").lower() == "true"
 ENABLE_ASYNC_PROCESSING = os.getenv("ENABLE_ASYNC_PROCESSING", "true").lower() == "true"
 ENABLE_STATUS_UPDATES = os.getenv("ENABLE_STATUS_UPDATES", "true").lower() == "true"
+ENABLE_TYPING_INDICATORS = os.getenv("ENABLE_TYPING_INDICATORS", "true").lower() == "true"
 MESSAGE_DEDUP_WINDOW = int(os.getenv("MESSAGE_DEDUP_WINDOW_SECONDS", "10"))
 
 # Log startup configuration
@@ -272,6 +275,12 @@ async def process_message_async(message: Dict, from_number: str, message_id: str
         content = await extract_message_content(message)
         session_id = from_number
         message_type = message.get("type")
+        
+        # Send immediate typing indicator
+        if ENABLE_TYPING_INDICATORS:
+            asyncio.create_task(
+                send_typing_indicator(from_number, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_TOKEN, message_type)
+            )
         
         # For long operations (image generation, audio), send status update after 5 seconds
         status_update_task = None

@@ -31,7 +31,7 @@ def should_summarize_conversation(
 
 def route_after_conversation(
     state: AICompanionState,
-) -> Literal["tools_node", "should_summarize"]:
+) -> Literal["tools_node", "check_summarize"]:
     """
     Route after conversation node based on whether tools were called.
     
@@ -44,7 +44,7 @@ def route_after_conversation(
     messages = state["messages"]
     if not messages:
         logger.warning("⚠️ [EDGE] No messages in state, routing to summarization")
-        return "should_summarize"
+        return "check_summarize"
     
     last_message = messages[-1]
     
@@ -55,4 +55,4 @@ def route_after_conversation(
         return "tools_node"
     
     logger.debug("✅ [EDGE] No tools called, routing to summarization check")
-    return "should_summarize"
+    return "check_summarize"

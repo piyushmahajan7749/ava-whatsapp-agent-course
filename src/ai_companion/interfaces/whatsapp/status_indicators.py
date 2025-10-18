@@ -79,6 +79,154 @@ async def mark_message_as_read(
         return False
 
 
+async def send_typing_indicator(
+    to_number: str,
+    phone_number_id: str,
+    whatsapp_token: str,
+    message_type: str = "text",
+    timeout: float = 5.0
+) -> bool:
+    """
+    Send a typing indicator by sending a quick status message.
+    
+    Since WhatsApp Cloud API doesn't support native typing indicators,
+    we send a brief status message to show the bot is processing.
+    
+    Args:
+        to_number: Phone number to send indicator to
+        phone_number_id: Your WhatsApp Business phone number ID
+        whatsapp_token: WhatsApp access token
+        message_type: Type of message being processed (text/audio/image)
+        timeout: Request timeout in seconds
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    # Get appropriate status message based on message type
+    status_messages = {
+        "audio": "🎤 Transcribing your audio message...",
+        "image": "🖼️ Analyzing your image...",
+        "text": "⏳ Processing your message...",
+        "payment": "💰 Verifying payment details...",
+        "booking": "📅 Checking calendar availability...",
+        "general": "🤔 Thinking about your request..."
+    }
+    
+    status_text = status_messages.get(message_type, status_messages["general"])
+    
+    headers = {
+        "Authorization": f"Bearer {whatsapp_token}",
+        "Content-Type": "application/json",
+    }
+    
+    json_data = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "text",
+        "text": {"body": status_text}
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"https://graph.facebook.com/v21.0/{phone_number_id}/messages",
+                headers=headers,
+                json=json_data,
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"✓ Sent typing indicator to {to_number}: {status_text}")
+                return True
+            else:
+                logger.warning(
+                    f"Failed to send typing indicator: {response.status_code} - {response.text}"
+                )
+                return False
+                
+    except httpx.TimeoutException:
+        logger.warning(f"Timeout sending typing indicator to {to_number}")
+        return False
+    except Exception as e:
+        logger.error(f"Error sending typing indicator: {e}")
+        return False
+
+
+async def send_processing_status(
+    to_number: str,
+    phone_number_id: str,
+    whatsapp_token: str,
+    workflow: str,
+    intent: str = None,
+    timeout: float = 5.0
+) -> bool:
+    """
+    Send a more specific processing status based on detected workflow and intent.
+    
+    Args:
+        to_number: Phone number to send status to
+        phone_number_id: Your WhatsApp Business phone number ID
+        whatsapp_token: WhatsApp access token
+        workflow: Detected workflow (conversation/image/audio)
+        intent: Detected intent (booking/consultation_inquiry/products_pooja)
+        timeout: Request timeout in seconds
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    # Create contextual status messages
+    status_messages = {
+        "image": "🎨 Analyzing your image...",
+        "audio": "🎤 Transcribing your audio...",
+        "conversation": "💭 Processing your request..."
+    }
+    
+    # Add intent-specific messages
+    if intent == "booking":
+        status_messages["conversation"] = "📅 Checking calendar availability..."
+    elif intent == "consultation_inquiry":
+        status_messages["conversation"] = "🤝 Preparing consultation details..."
+    elif intent == "products_pooja":
+        status_messages["conversation"] = "🙏 Looking up pooja products..."
+    
+    status_text = status_messages.get(workflow, status_messages["conversation"])
+    
+    headers = {
+        "Authorization": f"Bearer {whatsapp_token}",
+        "Content-Type": "application/json",
+    }
+    
+    json_data = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "text",
+        "text": {"body": status_text}
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"https://graph.facebook.com/v21.0/{phone_number_id}/messages",
+                headers=headers,
+                json=json_data,
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"✓ Sent processing status to {to_number}: {status_text}")
+                return True
+            else:
+                logger.warning(
+                    f"Failed to send processing status: {response.status_code} - {response.text}"
+                )
+                return False
+                
+    except httpx.TimeoutException:
+        logger.warning(f"Timeout sending processing status to {to_number}")
+        return False
+    except Exception as e:
+        logger.error(f"Error sending processing status: {e}")
+        return False
+
+
 async def react_to_message(
     message_id: str,
     to_number: str,
