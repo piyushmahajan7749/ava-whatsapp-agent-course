@@ -391,32 +391,82 @@ async def send_response_from_state(from_number: str, output_state):
     Handles different workflow types (conversation/audio/image) and attachments.
     """
     workflow = output_state.values.get("workflow", "conversation")
-    response_message = output_state.values["messages"][-1].content
     attachment_image_path = output_state.values.get("attachment_image_path")
     
-    logger.info(f"Sending response: workflow={workflow}, preview='{response_message[:100]}...'")
+    # Get all AI messages from the current conversation turn
+    all_messages = output_state.values["messages"]
+    ai_messages = [msg for msg in all_messages if hasattr(msg, 'content') and msg.__class__.__name__ == 'AIMessage']
+    
+    # Get the most recent AI messages (from current turn)
+    # Find where the user message starts to get only the AI response
+    user_message_index = -1
+    for i, msg in enumerate(all_messages):
+        if hasattr(msg, 'content') and msg.__class__.__name__ == 'HumanMessage':
+            user_message_index = i
+            break
+    
+    # Get AI messages after the last user message
+    recent_ai_messages = []
+    if user_message_index >= 0:
+        recent_ai_messages = [msg for msg in all_messages[user_message_index+1:] 
+                            if hasattr(msg, 'content') and msg.__class__.__name__ == 'AIMessage']
+    else:
+        # Fallback: get all AI messages
+        recent_ai_messages = ai_messages
+    
+    logger.info(f"Sending response: workflow={workflow}, ai_messages_count={len(recent_ai_messages)}")
     
     # Handle different response types based on workflow
     if workflow == "audio":
         audio_buffer = output_state.values["audio_buffer"]
+        # For audio, combine messages since we need to send as single audio
+        response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
         success = await send_response(from_number, response_message, "audio", audio_buffer)
     elif workflow == "image":
         image_path = output_state.values["image_path"]
         with open(image_path, "rb") as f:
             image_data = f.read()
+        # For image, combine messages since we need to send as single image with caption
+        response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
         success = await send_response(from_number, response_message, "image", image_data)
     else:
-        # Text response, possibly with attachment
+        # For text workflow, send each pre-chunked AI message separately
         if attachment_image_path:
             try:
                 with open(attachment_image_path, "rb") as f:
                     image_data = f.read()
+                # For image attachment, combine messages
+                response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
                 success = await send_response(from_number, response_message, "image", image_data)
             except Exception:
                 logger.exception("Failed to attach image; falling back to text")
-                success = await send_response(from_number, response_message, "text")
+                # Send each pre-chunked AI message separately
+                success = True
+                for i, ai_msg in enumerate(recent_ai_messages):
+                    if ai_msg.content.strip():
+                        logger.info(f"Sending WhatsApp message chunk {i+1}/{len(recent_ai_messages)}: {ai_msg.content[:100]}...")
+                        chunk_success = await send_response(from_number, ai_msg.content, "text")
+                        if not chunk_success:
+                            success = False
+                            logger.error(f"Failed to send chunk {i+1}/{len(recent_ai_messages)}")
+                        
+                        # Small delay between messages to ensure proper ordering
+                        if i < len(recent_ai_messages) - 1:
+                            await asyncio.sleep(0.5)
         else:
-            success = await send_response(from_number, response_message, "text")
+            # Send each pre-chunked AI message separately for better WhatsApp UX
+            success = True
+            for i, ai_msg in enumerate(recent_ai_messages):
+                if ai_msg.content.strip():
+                    logger.info(f"Sending WhatsApp message chunk {i+1}/{len(recent_ai_messages)}: {ai_msg.content[:100]}...")
+                    chunk_success = await send_response(from_number, ai_msg.content, "text")
+                    if not chunk_success:
+                        success = False
+                        logger.error(f"Failed to send chunk {i+1}/{len(recent_ai_messages)}")
+                    
+                    # Small delay between messages to ensure proper ordering
+                    if i < len(recent_ai_messages) - 1:
+                        await asyncio.sleep(0.5)
     
     if not success:
         logger.error(f"❌ Failed to send response to {from_number}")
@@ -509,10 +559,17 @@ async def send_response(
             logger.error(f"Media upload failed, falling back to text: {e}")
             message_type = "text"
 
-    # For text messages, chunk at sentence boundaries to avoid overwhelming users
+    # For text messages, only chunk if message exceeds WhatsApp's 1600 char limit
     if message_type == "text":
-        chunks = chunk_message_by_sentences(response_text, max_length=600)
-        logger.info(f"Sending {len(chunks)} message chunk(s) to {from_number}")
+        # Check if message exceeds WhatsApp's character limit
+        if len(response_text) > 1600:
+            # Fallback chunking for very long messages
+            chunks = chunk_message_by_sentences(response_text, max_length=1500)
+            logger.info(f"Message exceeds 1600 chars, splitting into {len(chunks)} chunks for {from_number}")
+        else:
+            # Send as-is (already chunked by conversation_node)
+            chunks = [response_text]
+            logger.info(f"Sending single message ({len(response_text)} chars) to {from_number}")
         
         all_success = True
         for i, chunk in enumerate(chunks):

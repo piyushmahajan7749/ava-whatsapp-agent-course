@@ -177,12 +177,9 @@ async def whatsapp_handler(request: Request) -> Response:
                 # Fallback: get all AI messages
                 recent_ai_messages = ai_messages
             
-            # Combine all AI message chunks into a single response
-            response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
-            
             attachment_image_path = output_state.values.get("attachment_image_path")
-            logger.info("Graph output: workflow=%s, ai_messages_count=%d, response_preview='%s'", 
-                       workflow, len(recent_ai_messages), response_message[:200])
+            logger.info("Graph output: workflow=%s, ai_messages_count=%d", 
+                       workflow, len(recent_ai_messages))
 
             # Check if AI should respond (Chatwoot handoff detection)
             should_ai_reply = True
@@ -199,23 +196,42 @@ async def whatsapp_handler(request: Request) -> Response:
             # Handle different response types based on workflow
             if workflow == "audio":
                 audio_buffer = output_state.values["audio_buffer"]
+                # For audio, combine messages since we need to send as single audio
+                response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
                 success = await send_response(from_number, response_message, "audio", audio_buffer)
             elif workflow == "image":
                 image_path = output_state.values["image_path"]
                 with open(image_path, "rb") as f:
                     image_data = f.read()
+                # For image, combine messages since we need to send as single image with caption
+                response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
                 success = await send_response(from_number, response_message, "image", image_data)
             else:
+                # For text workflow, send each pre-chunked AI message separately
                 if attachment_image_path:
                     try:
                         with open(attachment_image_path, "rb") as f:
                             image_data = f.read()
+                        # For image attachment, combine messages
+                        response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
                         success = await send_response(from_number, response_message, "image", image_data)
                     except Exception:
                         logger.exception("Failed to attach QR image; falling back to text")
                         success = await send_response(from_number, response_message, "text")
                 else:
-                    success = await send_response(from_number, response_message, "text")
+                    # Send each pre-chunked AI message separately for better WhatsApp UX
+                    success = True
+                    for i, ai_msg in enumerate(recent_ai_messages):
+                        if ai_msg.content.strip():
+                            logger.info(f"Sending WhatsApp message chunk {i+1}/{len(recent_ai_messages)}: {ai_msg.content[:100]}...")
+                            chunk_success = await send_response(from_number, ai_msg.content, "text")
+                            if not chunk_success:
+                                success = False
+                                logger.error(f"Failed to send chunk {i+1}/{len(recent_ai_messages)}")
+                            
+                            # Small delay between messages to ensure proper ordering
+                            if i < len(recent_ai_messages) - 1:
+                                await asyncio.sleep(0.5)
 
             if not success:
                 return Response(content="Failed to send message", status_code=500)
@@ -336,10 +352,17 @@ async def send_response(
             logger.error(f"Media upload failed, falling back to text: {e}")
             message_type = "text"
 
-    # For text messages, chunk at sentence boundaries to avoid overwhelming users
+    # For text messages, only chunk if message exceeds WhatsApp's 1600 char limit
     if message_type == "text":
-        chunks = chunk_message_by_sentences(response_text, max_length=600)
-        logger.info(f"Sending {len(chunks)} message chunk(s) to {from_number}")
+        # Check if message exceeds WhatsApp's character limit
+        if len(response_text) > 1600:
+            # Fallback chunking for very long messages
+            chunks = chunk_message_by_sentences(response_text, max_length=1500)
+            logger.info(f"Message exceeds 1600 chars, splitting into {len(chunks)} chunks for {from_number}")
+        else:
+            # Send as-is (already chunked by conversation_node)
+            chunks = [response_text]
+            logger.info(f"Sending single message ({len(response_text)} chars) to {from_number}")
         
         all_success = True
         for i, chunk in enumerate(chunks):
