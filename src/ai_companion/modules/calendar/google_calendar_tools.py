@@ -9,7 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from googleapiclient.errors import HttpError
 
 from ai_companion.modules.calendar.auth import get_calendar_service
-from ai_companion.modules.sheets.sheets_manager import log_consultation_booking
+from ai_companion.modules.sheets.sheets_manager import log_consultation_booking, log_product_order
 
 logger = logging.getLogger(__name__)
 
@@ -441,9 +441,82 @@ def get_available_consultation_slots(
         return f"❌ Error getting available consultation slots: {str(e)}"
 
 
+@tool
+def log_product_order_to_sheets(
+    product_type: Annotated[str, "Type of product (e.g., 'Apamarg Jad Kalawa', 'Yantra', 'Puja')"],
+    product_name: Annotated[str, "Specific product name (e.g., 'Kalawa - Blessed on Purnima')"],
+    customer_name: Annotated[str, "Full name of the customer"],
+    payment_amount: Annotated[int, "Amount paid in rupees"],
+    shipping_address: Annotated[str, "Complete shipping address for delivery"],
+    gotra: Annotated[str, "Family lineage/gotra (if provided)"] = "",
+    contact_info: Annotated[str, "Phone number or email address"] = "",
+    payment_details: Annotated[str, "Payment breakdown if split payment (e.g., '2000 + 100')"] = "",
+    puja_date: Annotated[str, "Date of puja/blessing (if applicable)"] = "",
+    thread_id: Annotated[str, "User session identifier"] = "",
+    notes: Annotated[str, "Additional notes or special instructions"] = "",
+    config: RunnableConfig = None,
+) -> str:
+    """
+    Log a product/puja order to Google Sheets for business tracking.
+    
+    This tool should be called when a customer completes a product order or puja booking
+    to create a record in the business spreadsheet for order fulfillment.
+    
+    Args:
+        product_type: Type of product (Kalawa, Yantra, Puja, etc.)
+        product_name: Specific product name
+        customer_name: Full name of customer
+        payment_amount: Amount paid in rupees
+        shipping_address: Complete delivery address
+        gotra: Family lineage (optional)
+        contact_info: Phone or email (optional)
+        payment_details: Split payment breakdown (optional)
+        puja_date: Date of puja/blessing (optional)
+        thread_id: User session ID (optional)
+        notes: Additional notes (optional)
+        
+    Returns:
+        Success message with order ID or error message
+    """
+    try:
+        # Get thread_id from config if not provided
+        if not thread_id and config:
+            thread_id = config.get("configurable", {}).get("thread_id", "")
+        
+        result = log_product_order(
+            product_type=product_type,
+            product_name=product_name,
+            customer_name=customer_name,
+            payment_amount=payment_amount,
+            shipping_address=shipping_address,
+            gotra=gotra or None,
+            contact_info=contact_info or None,
+            payment_details=payment_details or None,
+            puja_date=puja_date or None,
+            thread_id=thread_id or None,
+            notes=notes or None,
+        )
+        
+        if result.get("success"):
+            order_id = result.get("order_id", "Unknown")
+            return f"✅ Product order logged successfully! Order ID: {order_id}. The order has been recorded in our system for processing."
+        else:
+            error = result.get("error", "Unknown error")
+            return f"❌ Failed to log product order: {error}"
+            
+    except Exception as e:
+        logger.error(f"Error logging product order: {e}", exc_info=True)
+        return f"❌ Error logging product order: {str(e)}"
+
+
 def get_calendar_tools():
-    """Return a list of all calendar tools."""
-    return [check_calendar_availability, book_calendar_event, get_available_consultation_slots]
+    """Return a list of all calendar and sheets tools."""
+    return [
+        check_calendar_availability, 
+        book_calendar_event, 
+        get_available_consultation_slots,
+        log_product_order_to_sheets
+    ]
 
 
 def set_payment_verified(thread_id: str, verified: bool = True):

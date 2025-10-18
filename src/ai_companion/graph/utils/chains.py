@@ -132,18 +132,25 @@ def get_character_response_chain(
         
         if enable_tools:
             system_message += (
-                "\n\nYou have access to calendar tools to check availability and book events. "
-                "When users ask about scheduling, availability, or booking, use the appropriate tools:\n"
+                "\n\nYou have access to calendar and business tools. Use the appropriate tools when needed:\n"
+                "\n**CALENDAR TOOLS:**\n"
                 "- check_calendar_availability: Check if a time slot is free\n"
                 "- book_calendar_event: Book an event in the calendar\n"
                 "- get_available_consultation_slots: Get all available slots for a specific date\n"
+                "\n**BUSINESS TOOLS:**\n"
+                "- log_product_order_to_sheets: Log product/puja orders to business spreadsheet\n"
                 "\n**CRITICAL TIMEZONE INSTRUCTIONS:**\n"
                 "- All times mentioned by users are in IST (Indian Standard Time, UTC+5:30)\n"
                 "- When calling calendar tools, provide times in ISO format WITH IST offset\n"
                 "- Example: For 10:00 AM IST on Oct 4, 2025, use: 2025-10-04T10:00:00+05:30\n"
                 "- Example: For 3:30 PM IST on Oct 5, 2025, use: 2025-10-05T15:30:00+05:30\n"
                 "- Always include the +05:30 offset in the ISO datetime string\n"
-                "Always confirm details with the user before booking events."
+                "\n**PRODUCT ORDER LOGGING:**\n"
+                "- When a customer completes a product order or puja booking, ALWAYS call log_product_order_to_sheets\n"
+                "- This creates a business record for order fulfillment\n"
+                "- Required fields: product_type, product_name, customer_name, payment_amount, shipping_address\n"
+                "- Optional fields: gotra, contact_info, payment_details, puja_date, notes\n"
+                "Always confirm details with the user before booking events or logging orders."
             )
         
         # Return formatted messages
