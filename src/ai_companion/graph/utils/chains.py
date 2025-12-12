@@ -125,6 +125,16 @@ def get_character_response_chain(
         
         if inputs.get("product_context"):
             system_message += f"\n\nProduct Context: {inputs['product_context']}"
+
+        # Force response language when requested by the caller (e.g., WhatsApp Hindi users).
+        # This is more robust than relying on post-translation alone.
+        response_language = (inputs.get("response_language") or "").strip().lower()
+        if response_language == "hindi":
+            system_message += (
+                "\n\nLANGUAGE REQUIREMENT:\n"
+                "- The user is writing in Hindi. Respond in Hindi (Devanagari script).\n"
+                "- Keep it concise and end with a complete sentence.\n"
+            )
         
         # Add unified agent instructions with all domain knowledge
         if additional_context:

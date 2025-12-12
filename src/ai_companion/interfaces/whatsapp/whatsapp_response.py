@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import asyncio
+import re
 from io import BytesIO
 from typing import Dict
 
@@ -73,6 +74,45 @@ if not WHATSAPP_TOKEN:
     logger.error("WHATSAPP_TOKEN environment variable is not set!")
 if not WHATSAPP_PHONE_NUMBER_ID:
     logger.error("WHATSAPP_PHONE_NUMBER_ID environment variable is not set!")
+
+
+def _finalize_whatsapp_text(text: str, max_chars: int = 1500) -> str:
+    """
+    Make WhatsApp text safe:
+    - Keep within a safe char limit (<1600)
+    - Avoid sending cut-off mid-sentence by trimming to the last sentence boundary
+    """
+    if not text:
+        return ""
+
+    text = " ".join(text.split()).strip()
+    if not text:
+        return ""
+
+    # If the model stops mid-sentence (token cap), prefer last completed sentence even if short.
+    sentence_end_re = re.compile(r"[.!?\n\u0964]")  # includes Hindi danda '।'
+
+    def trim_to_last_sentence(s: str) -> str:
+        matches = list(sentence_end_re.finditer(s))
+        if not matches:
+            return s.strip()
+        last_end = matches[-1].end()
+        trimmed = s[:last_end].strip()
+        return trimmed if trimmed else s.strip()
+
+    # First, enforce max chars (WhatsApp hard limit is ~1600 for text body)
+    if len(text) > max_chars:
+        text = text[:max_chars].strip()
+        text = trim_to_last_sentence(text)
+        return text
+
+    # Otherwise, still ensure we don't end mid-sentence if a completed one exists.
+    if not sentence_end_re.search(text[-1:]):
+        trimmed = trim_to_last_sentence(text)
+        if trimmed:
+            return trimmed
+
+    return text
 
 
 @whatsapp_router.api_route("/whatsapp_response", methods=["GET", "POST"])
@@ -342,45 +382,34 @@ async def send_response(
             logger.error(f"Media upload failed, falling back to text: {e}")
             message_type = "text"
 
-    # For text messages, only chunk if message exceeds WhatsApp's 1600 char limit
+    # For text messages, send exactly one message and keep it safe.
     if message_type == "text":
-        # Check if message exceeds WhatsApp's character limit
-        if len(response_text) > 1600:
-            # Fallback chunking for very long messages
-            chunks = chunk_message_by_sentences(response_text, max_length=1500)
-            logger.info(f"Message exceeds 1600 chars, splitting into {len(chunks)} chunks for {from_number}")
-        else:
-            # Send as-is (already chunked by conversation_node)
-            chunks = [response_text]
-            logger.info(f"Sending single message ({len(response_text)} chars) to {from_number}")
-        
-        all_success = True
-        for i, chunk in enumerate(chunks):
-            json_data = {
-                "messaging_product": "whatsapp",
-                "to": from_number,
-                "type": "text",
-                "text": {"body": chunk},
-            }
-            
-            logger.debug(f"WA send chunk {i+1}/{len(chunks)}: {chunk[:100]}...")
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages",
-                    headers=headers,
-                    json=json_data,
-                )
-            
-            if response.status_code != 200:
-                logger.error(f"Failed to send chunk {i+1}/{len(chunks)}: {response.text}")
-                all_success = False
-            
-            # Small delay between chunks to ensure proper ordering
-            if i < len(chunks) - 1:
-                await asyncio.sleep(0.5)
-        
-        return all_success
+        body = _finalize_whatsapp_text(response_text, max_chars=1500)
+        if not body:
+            body = "Sorry—I couldn’t generate a response. Please try again."
+
+        json_data = {
+            "messaging_product": "whatsapp",
+            "to": from_number,
+            "type": "text",
+            "text": {"body": body},
+        }
+
+        logger.info(f"Sending single message ({len(body)} chars) to {from_number}")
+        logger.debug("WA send body: %s...", body[:120])
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages",
+                headers=headers,
+                json=json_data,
+            )
+
+        if response.status_code != 200:
+            logger.error(f"Failed to send message: {response.text}")
+            return False
+
+        return True
     
     return False
 

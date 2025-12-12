@@ -63,6 +63,14 @@ def should_respond_in_hindi(user_messages: list) -> bool:
     """
     if not user_messages:
         return False
+
+    # Strong signal: if the most recent user message contains any Devanagari,
+    # respond in Hindi immediately. This avoids "missing" Hindi when older
+    # messages in the window were English.
+    last = user_messages[-1]
+    last_text = getattr(last, "content", "") or ""
+    if contains_hindi(last_text):
+        return True
     
     # Check the last 3 messages for Hindi content
     recent_text = " ".join([msg.content for msg in user_messages[-3:] if hasattr(msg, 'content')])

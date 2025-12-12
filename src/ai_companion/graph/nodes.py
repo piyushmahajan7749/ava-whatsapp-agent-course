@@ -16,7 +16,7 @@ from ai_companion.graph.utils.helpers import (
     get_text_to_speech_module,
     chunk_response_into_messages,
 )
-from ai_companion.modules.language.hindi_detection import should_respond_in_hindi
+from ai_companion.modules.language.hindi_detection import should_respond_in_hindi, contains_hindi
 from ai_companion.modules.language.hindi_translation import translate_response_if_needed
 from ai_companion.modules.memory.long_term.memory_manager import get_memory_manager
 from ai_companion.modules.schedules.context_generation import ScheduleContextGenerator
@@ -427,6 +427,7 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
                 "current_activity": current_activity,
                 "memory_context": memory_context,
                 "product_context": product_context,
+                "response_language": "hindi" if should_translate_to_hindi else "english",
             },
             config,
         )
@@ -452,8 +453,13 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
     
     # Translate to Hindi if needed
     if should_translate_to_hindi:
-        response_text = translate_response_if_needed(response_text, True)
-        logger.info(f"🇮🇳 [CONVERSATION] Translated to Hindi")
+        # Prefer having the LLM respond directly in Hindi (via prompt instruction).
+        # If we still got an English response, translate as a fallback.
+        if not contains_hindi(response_text):
+            response_text = translate_response_if_needed(response_text, True)
+            logger.info(f"🇮🇳 [CONVERSATION] Translated to Hindi (fallback)")
+        else:
+            logger.info("🇮🇳 [CONVERSATION] Responding in Hindi (LLM output)")
     
     # Chunk response into multiple messages
     message_chunks = chunk_response_into_messages(response_text)
