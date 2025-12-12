@@ -10,13 +10,13 @@ from ai_companion.modules.speech import TextToSpeech
 from ai_companion.settings import settings
 
 
-def get_chat_model(temperature: float = 1, max_tokens: int = 150):
+def get_chat_model(temperature: float = 1, max_tokens: int = 120):
     """
     Get chat model with parameters optimized for short, focused messages.
     
     Args:
         temperature: Controls randomness (0.0 = deterministic, 1.0 = creative)
-        max_tokens: Maximum tokens per response (150 = ~1-2 sentences)
+        max_tokens: Maximum tokens per response (120 = ~1-2 sentences)
     """
     return AzureChatOpenAI(
         azure_deployment=settings.TEXT_MODEL_NAME,

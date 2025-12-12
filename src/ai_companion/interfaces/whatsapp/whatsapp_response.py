@@ -161,10 +161,12 @@ async def whatsapp_handler(request: Request) -> Response:
             ai_messages = [msg for msg in all_messages if hasattr(msg, 'content') and msg.__class__.__name__ == 'AIMessage']
             
             # Get the most recent AI messages (from current turn)
-            # Find where the user message starts to get only the AI response
+            # Find the *last* user message to get only the AI response for this turn
+            # (Using the first HumanMessage causes old AI chunks to be re-sent.)
             user_message_index = -1
-            for i, msg in enumerate(all_messages):
-                if hasattr(msg, 'content') and msg.__class__.__name__ == 'HumanMessage':
+            for i in range(len(all_messages) - 1, -1, -1):
+                msg = all_messages[i]
+                if hasattr(msg, "content") and msg.__class__.__name__ == "HumanMessage":
                     user_message_index = i
                     break
             
@@ -176,6 +178,12 @@ async def whatsapp_handler(request: Request) -> Response:
             else:
                 # Fallback: get all AI messages
                 recent_ai_messages = ai_messages
+
+            # Always combine to a single response for WhatsApp to avoid duplicate/fragmented sends.
+            # WhatsApp API has a 1600 char limit; send_response() will chunk only if needed.
+            response_message = " ".join([msg.content.strip() for msg in recent_ai_messages if msg.content and msg.content.strip()]).strip()
+            if not response_message:
+                response_message = "Sorry—I couldn’t generate a response. Please try again."
             
             attachment_image_path = output_state.values.get("attachment_image_path")
             logger.info("Graph output: workflow=%s, ai_messages_count=%d", 
@@ -196,42 +204,24 @@ async def whatsapp_handler(request: Request) -> Response:
             # Handle different response types based on workflow
             if workflow == "audio":
                 audio_buffer = output_state.values["audio_buffer"]
-                # For audio, combine messages since we need to send as single audio
-                response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
                 success = await send_response(from_number, response_message, "audio", audio_buffer)
             elif workflow == "image":
                 image_path = output_state.values["image_path"]
                 with open(image_path, "rb") as f:
                     image_data = f.read()
-                # For image, combine messages since we need to send as single image with caption
-                response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
                 success = await send_response(from_number, response_message, "image", image_data)
             else:
-                # For text workflow, send each pre-chunked AI message separately
+                # For text workflow, send exactly one message (short + stable UX)
                 if attachment_image_path:
                     try:
                         with open(attachment_image_path, "rb") as f:
                             image_data = f.read()
-                        # For image attachment, combine messages
-                        response_message = " ".join([msg.content for msg in recent_ai_messages if msg.content.strip()])
                         success = await send_response(from_number, response_message, "image", image_data)
                     except Exception:
                         logger.exception("Failed to attach QR image; falling back to text")
                         success = await send_response(from_number, response_message, "text")
                 else:
-                    # Send each pre-chunked AI message separately for better WhatsApp UX
-                    success = True
-                    for i, ai_msg in enumerate(recent_ai_messages):
-                        if ai_msg.content.strip():
-                            logger.info(f"Sending WhatsApp message chunk {i+1}/{len(recent_ai_messages)}: {ai_msg.content[:100]}...")
-                            chunk_success = await send_response(from_number, ai_msg.content, "text")
-                            if not chunk_success:
-                                success = False
-                                logger.error(f"Failed to send chunk {i+1}/{len(recent_ai_messages)}")
-                            
-                            # Small delay between messages to ensure proper ordering
-                            if i < len(recent_ai_messages) - 1:
-                                await asyncio.sleep(0.5)
+                    success = await send_response(from_number, response_message, "text")
 
             if not success:
                 return Response(content="Failed to send message", status_code=500)
