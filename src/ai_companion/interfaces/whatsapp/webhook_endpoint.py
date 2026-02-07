@@ -24,6 +24,15 @@ except Exception as e:
     logger.exception("Full traceback:")
     conversations_router = None
 
+# Import Interakt router for Lumi onboarding
+try:
+    from ai_companion.interfaces.interakt import interakt_router
+    logger.info("✓ Successfully imported interakt_router")
+except Exception as e:
+    logger.error(f"✗ Failed to import interakt_router: {e}")
+    logger.exception("Full traceback:")
+    interakt_router = None
+
 app = FastAPI(title="Upaai AI Companion API", version="1.0.0")
 
 # CORS middleware for Next.js frontend
@@ -49,6 +58,12 @@ if conversations_router:
     logger.info("✓ Included conversations_router")
 else:
     logger.warning("✗ Skipping conversations_router (failed to import)")
+
+if interakt_router:
+    app.include_router(interakt_router)
+    logger.info("✓ Included interakt_router (Lumi onboarding)")
+else:
+    logger.warning("✗ Skipping interakt_router (failed to import)")
 
 logger.info("=" * 60)
 logger.info(f"Total routes registered: {len(app.routes)}")

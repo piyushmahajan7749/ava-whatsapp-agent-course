@@ -52,5 +52,30 @@ class Settings(BaseSettings):
     CHATWOOT_INBOX_ID: str | None = None
     CHATWOOT_ACCOUNT_ID: int = 1
 
+    # Interakt integration
+    INTERAKT_API_KEY: str | None = None
+    INTERAKT_SEND_MESSAGE_URL: str = "https://api.interakt.ai/v1/public/message/"
+    INTERAKT_WEBHOOK_SECRET: str | None = None  # Secret key for webhook signature verification
+
+    # Staged rollout
+    ALLOWLIST_NUMBERS: str | None = None  # Comma-separated E.164 (no +), e.g., "919303402193,14162780455"
+    BOT_ENABLED: bool = True  # Kill switch - set to False to disable all AI responses
+
+    # AI processing
+    AI_TIMEOUT_SECONDS: int = 5
+    FALLBACK_MESSAGE: str = "Thanks for reaching out. Our team will get back to you shortly."
+
+    # Lumi onboarding
+    LUMI_ENABLED: bool = True
+    EXISTING_CLIENTS_DB_URL: str | None = None  # For client lookup (optional)
+
+    # Re-engagement timing (in hours)
+    NUDGE_DELAY_1_HOURS: int = 2
+    NUDGE_DELAY_2_HOURS: int = 24
+    ARCHIVE_DELAY_HOURS: int = 72
+
+    # Handoff keywords (comma-separated)
+    HANDOFF_KEYWORDS: str = "talk to manager,call me,human please,manager se baat,insaan se baat,refund,complaint"
+
 
 settings = Settings()
