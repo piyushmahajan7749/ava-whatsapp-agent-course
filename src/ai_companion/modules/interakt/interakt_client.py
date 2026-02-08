@@ -157,6 +157,7 @@ class InteraktClient:
             "phoneNumber": local_number,
             "type": "InteractiveButton",
             "data": {
+                "message": body_text,
                 "body": body_text,
                 "buttons": button_actions,
             },
@@ -222,6 +223,7 @@ class InteraktClient:
             "phoneNumber": local_number,
             "type": "InteractiveList",
             "data": {
+                "message": body_text,
                 "body": body_text,
                 "buttonText": button_text,
                 "sections": sections,
