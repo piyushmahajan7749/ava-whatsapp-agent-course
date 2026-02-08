@@ -282,20 +282,9 @@ async def _send_messages(
         return False
 
     try:
-        # Send all messages except last
-        for msg in messages[:-1]:
+        # Send all messages as plain text (buttons not yet supported by Interakt API)
+        for msg in messages:
             await interakt_client.send_text_message(phone_number, msg)
-
-        # Send last message (potentially with buttons)
-        last_msg = messages[-1] if messages else ""
-        if buttons and len(buttons) > 0:
-            await interakt_client.send_button_message(
-                phone_number=phone_number,
-                body_text=last_msg,
-                buttons=buttons,
-            )
-        else:
-            await interakt_client.send_text_message(phone_number, last_msg)
 
         return True
 
