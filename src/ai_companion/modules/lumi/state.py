@@ -116,6 +116,9 @@ class LumiUserState(BaseModel):
     # Handoff context
     handoff_reason: Optional[str] = None
 
+    # Conversation history for LLM context
+    conversation_history: List[dict] = Field(default_factory=list)
+
     class Config:
         use_enum_values = True
 
