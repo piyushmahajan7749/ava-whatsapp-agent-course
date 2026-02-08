@@ -218,15 +218,24 @@ async def interakt_webhook_handler(request: Request) -> Response:
             logger.info(f"[INTERAKT_WEBHOOK] {phone_number} in human handoff - not responding")
             return Response(content="OK (human handoff)", status_code=200)
 
-        # Currently only supporting text messages
-        if content_type not in ("Text", "text"):
-            logger.info(f"[INTERAKT_WEBHOOK] Non-text content: {content_type}")
-            # Could extend to handle voice notes, images, etc.
-            return Response(content="OK (non-text)", status_code=200)
+        # Support text, button, and list messages
+        supported_types = ("Text", "text", "Button", "button", "List", "list")
+        if content_type not in supported_types:
+            logger.info(f"[INTERAKT_WEBHOOK] Unsupported content: {content_type}")
+            return Response(content="OK (unsupported content)", status_code=200)
+
+        # For button/list replies, extract the selection title
+        is_button = content_type.lower() in ("button", "list")
+        if is_button:
+            message_text = (
+                message_data.get("selectedOption", {}).get("title", "")
+                or message_data.get("button_reply", {}).get("title", "")
+                or message_data.get("list_reply", {}).get("title", "")
+                or message_text
+            )
 
         # Process with Lumi flow
         flow_handler = get_flow_handler()
-        is_button = content_type in ("Button", "List")
 
         flow_response = await flow_handler.handle_message(
             phone_number=phone_number,
@@ -251,6 +260,14 @@ async def interakt_webhook_handler(request: Request) -> Response:
         if flow_response.messages:
             await _send_messages(phone_number, flow_response.messages, flow_response.buttons)
 
+        # Send friction message separately (if present)
+        if flow_response.friction_message:
+            await _send_messages(
+                phone_number,
+                [flow_response.friction_message],
+                flow_response.friction_buttons,
+            )
+
         logger.info(f"[INTERAKT_WEBHOOK] Processed message for {phone_number}")
         return Response(content="OK", status_code=200)
 
@@ -268,6 +285,9 @@ async def _send_messages(
     """
     Send messages via Interakt.
 
+    Sends all messages as plain text except the last one, which is sent
+    with interactive buttons if buttons are provided.
+
     Args:
         phone_number: User's phone number
         messages: List of message strings to send
@@ -282,9 +302,33 @@ async def _send_messages(
         return False
 
     try:
-        # Send all messages as plain text (buttons not yet supported by Interakt API)
-        for msg in messages:
+        if not messages:
+            return True
+
+        # Send all messages except the last as plain text
+        for msg in messages[:-1]:
             await interakt_client.send_text_message(phone_number, msg)
+
+        # Send last message with buttons if provided
+        last_message = messages[-1]
+        if buttons and len(buttons) > 0:
+            # WhatsApp button body limit is 1024 chars
+            if len(last_message) > 1024:
+                # Body too long for button message, send text first then buttons
+                await interakt_client.send_text_message(phone_number, last_message)
+                await interakt_client.send_button_message(
+                    phone_number,
+                    body_text="What would you like to do?",
+                    buttons=buttons,
+                )
+            else:
+                await interakt_client.send_button_message(
+                    phone_number,
+                    body_text=last_message,
+                    buttons=buttons,
+                )
+        else:
+            await interakt_client.send_text_message(phone_number, last_message)
 
         return True
 

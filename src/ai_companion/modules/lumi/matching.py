@@ -252,7 +252,7 @@ def match_therapist(user_state: LumiUserState) -> Expert:
                 f"[MATCHING] +{20 if expert_sev == user_sev else 10} severity: {t.name}"
             )
         else:
-            # Expert can't handle this severity — penalize heavily
+            # Expert can't handle this severity - penalize heavily
             scores[t.id] -= 30
             logger.debug(f"[MATCHING] -30 severity mismatch: {t.name}")
 
@@ -416,7 +416,7 @@ def get_recommended_plan(user_state: LumiUserState, therapist: Expert) -> dict:
             "therapist_tier": tier,
         }
 
-    # Default / "not_sure" — show single session price
+    # Default / "not_sure" - show single session price
     tier_pricing = PRICING["therapy_single_session"].get(tier, {})
     return {
         "plan_type": "single_session",

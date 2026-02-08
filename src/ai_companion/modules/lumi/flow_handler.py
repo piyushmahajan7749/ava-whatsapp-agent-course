@@ -33,6 +33,10 @@ from ai_companion.modules.lumi.prompts import (
     FRICTION_CYCLING_OPTIONS,
     HUMAN_HANDOFF_MESSAGE,
     CRISIS_RESPONSE,
+    FAQ_SYSTEM_PROMPT_SECTION,
+    WHATSAPP_COMMUNITY_CTA,
+    VITALITY_SCORE_CTA,
+    EXPERT_DIRECTORY_CTA,
 )
 from ai_companion.modules.lumi.crisis_detector import check_for_crisis
 from ai_companion.modules.lumi.friction_detector import check_for_friction
@@ -69,21 +73,21 @@ STAGE_GUIDANCE = {
 
     OnboardingStage.STORY: """Ask what brings them here today. Be warm and open. Let them know they can type or send a voice note - whatever feels easier.""",
 
-    OnboardingStage.THERAPY_HISTORY: """Ask if they've tried therapy before. Be curious but non-judgmental. Acknowledge their experience appropriately.""",
+    OnboardingStage.THERAPY_HISTORY: """Ask if they've tried therapy before. Be curious but non-judgmental. Do NOT list options, buttons will be shown automatically.""",
 
-    OnboardingStage.CARE_PREFERENCES: """Ask what kind of support feels right - full care plan (therapy + lifestyle), just therapy, or not sure yet. Explain briefly what each means.""",
+    OnboardingStage.CARE_PREFERENCES: """Ask what kind of support feels right for them. Do NOT list the options, buttons will be shown automatically.""",
 
-    OnboardingStage.MEDICATION: """Ask if they're currently taking any mental health medications. Be gentle and reassure this is just to help with matching.""",
+    OnboardingStage.MEDICATION: """Ask if they're currently taking any mental health medications. Be gentle and reassure this is just to help with matching. Do NOT list options, buttons will be shown automatically.""",
 
-    OnboardingStage.CONCERNS: """Ask what they're hoping to work on. List some options like anxiety, depression, relationships, etc. Let them select multiple.""",
+    OnboardingStage.CONCERNS: """Ask what they're hoping to work on. Mention a few examples naturally (like anxiety, depression, relationships). Let them know they can select multiple.""",
 
-    OnboardingStage.LANGUAGE: """Ask their preferred language for therapy. Mention options like Hindi, English, Tamil, etc.""",
+    OnboardingStage.LANGUAGE: """Ask their preferred language for therapy. Mention a couple of common options naturally. Do NOT list all options, buttons will be shown automatically.""",
 
-    OnboardingStage.THERAPIST_STYLE: """Ask about their preferred therapist style - warm & nurturing, structured & direct, trauma-informed, queer-affirming, etc.""",
+    OnboardingStage.THERAPIST_STYLE: """Ask about their preferred therapist style. Mention a couple of examples naturally. Do NOT list all options.""",
 
-    OnboardingStage.GENDER_PREFERENCE: """Ask if they have a preference for their therapist's gender - man, woman, or flexible.""",
+    OnboardingStage.GENDER_PREFERENCE: """Ask if they have a preference for their therapist's gender. Do NOT list options, buttons will be shown automatically.""",
 
-    OnboardingStage.PERSONAL_CONTEXT: """Ask about their relationship status. Keep it casual and include a 'prefer not to say' option.""",
+    OnboardingStage.PERSONAL_CONTEXT: """Ask about their relationship status. Keep it casual. Do NOT list options, buttons will be shown automatically.""",
 
     OnboardingStage.PERSONAL_DOB: """Ask for their date of birth in DD/MM/YYYY format. Explain it helps with records.""",
 
@@ -105,6 +109,8 @@ class FlowResponse:
 
     messages: List[str]
     buttons: Optional[List[dict]] = None
+    friction_message: Optional[str] = None
+    friction_buttons: Optional[List[dict]] = None
     is_handoff: bool = False
     handoff_reason: Optional[str] = None
     is_crisis: bool = False
@@ -158,7 +164,7 @@ class LumiFlowHandler:
         # Terminal states: conversation is over, do not respond
         if state.stage in TERMINAL_STAGES:
             logger.info(
-                f"[LUMI_FLOW] Ignoring message from {phone_number} — "
+                f"[LUMI_FLOW] Ignoring message from {phone_number} - "
                 f"conversation is in terminal state: {state.stage}"
             )
             return FlowResponse(messages=[])
@@ -196,7 +202,7 @@ class LumiFlowHandler:
             state.handoff_reason = handoff_decision.reason
             save_user_state(state)
             return FlowResponse(
-                messages=[HUMAN_HANDOFF_MESSAGE.format(care_specialist_name="our Care Specialist")],
+                messages=[HUMAN_HANDOFF_MESSAGE],
                 is_handoff=True,
                 handoff_reason=handoff_decision.reason,
                 new_state=state,
@@ -215,16 +221,33 @@ class LumiFlowHandler:
             if friction_decision.friction_type == "short_answer":
                 state.short_answer_count += 1
 
+        # Handle CTA button selections (community, vitality score, directory, etc.)
+        button_response = self._handle_button_action(state, message_text)
+        if button_response is not None:
+            save_user_state(state)
+            return button_response
+
         # Process based on current stage
         response = await self._process_stage(state, message_text, is_button_response)
 
-        # Check if we should offer handoff due to friction
-        if friction_decision.should_offer_handoff and not response.is_handoff:
-            response.messages.append(FRICTION_CHECKPOINT)
-            response.buttons = [
-                {"id": "continue_lumi", "title": "Keep going with Lumi"},
-                {"id": "talk_to_team", "title": "Talk to someone"},
-            ]
+        # Add friction CTA as separate message (not appended to stage response)
+        if friction_decision.is_friction and not response.is_handoff:
+            if friction_decision.should_offer_handoff:
+                # Multiple friction signals: full CTA menu
+                community_note = f"\nOr join our safe space: https://chat.whatsapp.com/LklnvbTjMm7LXexSEh7LGG?mode=gi_t"
+                response.friction_message = FRICTION_CHECKPOINT + community_note
+                response.friction_buttons = [
+                    {"id": "continue_lumi", "title": "Keep going with Lumi"},
+                    {"id": "vitality_score", "title": "Take Vitality Score"},
+                    {"id": "talk_to_team", "title": "Book a call"},
+                ]
+            elif state.friction_detected_count <= 1:
+                # First friction: gentle nudge with Vitality Score
+                response.friction_message = VITALITY_SCORE_CTA
+                response.friction_buttons = [
+                    {"id": "continue_lumi", "title": "Let's keep going"},
+                    {"id": "vitality_score", "title": "Take the quiz"},
+                ]
 
         # Add AI response to history
         for msg in response.messages:
@@ -307,12 +330,16 @@ User context:
 IMPORTANT RULES:
 - Keep responses SHORT (2-3 sentences max)
 - Be warm but concise
-- One question at a time
+- Ask ONLY ONE question per message. Never combine two topics.
+- Do NOT list options or bullet points for choices. Buttons will be shown separately by the system.
 - Never diagnose or give medical advice
 - Respond naturally to what the user said
 - Do NOT use emojis unless there is a strong reason (first greeting, celebration moment). Most messages should have zero emojis.
 - NEVER repeat a phrase, emoji, or sign-off you already used in this conversation. Vary your language every time.
 - Do NOT fall into patterns like always ending with a heart, always starting with "I hear you", etc.
+- Never use em dashes or long dashes. Use commas, periods, or colons instead.
+
+{FAQ_SYSTEM_PROMPT_SECTION}
 """
 
         # Build messages for LLM
@@ -328,7 +355,10 @@ IMPORTANT RULES:
         # Generate response
         try:
             response = await self.llm.ainvoke(messages)
-            return response.content.strip()
+            text = response.content.strip()
+            # Replace em dashes and en dashes with regular hyphens
+            text = text.replace("—", "-").replace("–", "-")
+            return text
         except Exception as e:
             logger.error(f"[LUMI_FLOW] LLM invoke error: {e}")
             raise
@@ -360,6 +390,72 @@ IMPORTANT RULES:
 
         return "\n".join(context_parts) if context_parts else "No information collected yet."
 
+    # FAQ trigger keywords
+    FAQ_KEYWORDS = [
+        "cost", "price", "pricing", "how much", "pay", "payment", "fees",
+        "refund", "cancel", "cancellation", "pause", "reschedule",
+        "privacy", "private", "secure", "confidential",
+        "care plan", "what's included", "what is included", "what do i get",
+        "session length", "how long", "format", "duration",
+        "nri", "international", "outside india", "abroad",
+        "neurodivergent", "adhd", "autism",
+        "change therapist", "switch therapist", "different therapist",
+        "who is feel your best", "what is feel your best",
+        "how do i start", "how do i get started", "how does it work",
+        "types of experts", "what experts",
+        "severe", "psychiatric",
+    ]
+
+    def _is_faq_question(self, message: str) -> bool:
+        """Check if the user's message is a FAQ-type question."""
+        message_lower = message.lower()
+        # Must match a keyword AND contain a question indicator
+        has_keyword = any(kw in message_lower for kw in self.FAQ_KEYWORDS)
+        has_question = "?" in message or any(
+            q in message_lower
+            for q in ["how", "what", "can i", "do you", "is it", "tell me about", "does"]
+        )
+        return has_keyword and has_question
+
+    def _handle_button_action(self, state: LumiUserState, message: str) -> Optional[FlowResponse]:
+        """Route CTA button selections. Returns None if not a CTA button."""
+        message_lower = message.lower()
+
+        # Continue with Lumi (no-op, fall through to normal flow)
+        if message_lower in ("keep going with lumi", "let's keep going", "let's keep going"):
+            return None
+
+        # Vitality Score CTA
+        if message_lower in ("take vitality score", "take the quiz", "vitality score"):
+            return FlowResponse(messages=[VITALITY_SCORE_CTA])
+
+        # WhatsApp Community CTA
+        if message_lower in ("join our safe space", "join community"):
+            return FlowResponse(messages=[WHATSAPP_COMMUNITY_CTA])
+
+        # Expert Directory CTA
+        if message_lower in ("browse all experts", "browse directory", "browse experts"):
+            return FlowResponse(messages=[EXPERT_DIRECTORY_CTA])
+
+        # Browse all experts keyword detection
+        if any(kw in message_lower for kw in [
+            "all experts", "all therapists", "browse experts",
+            "list of therapists", "expert directory", "see everyone",
+        ]):
+            return FlowResponse(messages=[EXPERT_DIRECTORY_CTA])
+
+        # Book a call / Talk to team -> Calendar handoff
+        if message_lower in ("book a call", "talk to care team"):
+            state.stage = OnboardingStage.HUMAN_HANDOFF
+            state.handoff_reason = "user_request"
+            return FlowResponse(
+                messages=[HUMAN_HANDOFF_MESSAGE],
+                is_handoff=True,
+                handoff_reason="user_request",
+            )
+
+        return None
+
     async def _process_stage(
         self,
         state: LumiUserState,
@@ -369,6 +465,17 @@ IMPORTANT RULES:
         """Process message based on current stage."""
         stage = state.stage
         logger.info(f"[LUMI_FLOW] Processing stage {stage} for {state.phone_number}")
+
+        # Check if user is asking a FAQ question - answer without advancing stage
+        if self._is_faq_question(message):
+            try:
+                faq_response = await self._generate_llm_response(state, message)
+                return FlowResponse(
+                    messages=[faq_response],
+                    buttons=self._get_stage_buttons(stage),
+                )
+            except Exception:
+                logger.warning("[LUMI_FLOW] FAQ response failed, continuing with normal flow")
 
         # Handle post-matching stages based on CURRENT stage (not next stage)
         # These stages are not in the linear stage_order and handle their own transitions
@@ -605,9 +712,10 @@ IMPORTANT RULES:
 
             if state.therapist_options_shown_count >= 2:
                 return FlowResponse(
-                    messages=[FRICTION_CYCLING_OPTIONS],
+                    messages=[FRICTION_CYCLING_OPTIONS + "\n\n" + EXPERT_DIRECTORY_CTA],
                     buttons=[
                         {"id": "talk_to_team", "title": "Talk to Care team"},
+                        {"id": "browse_directory", "title": "Browse all experts"},
                         {"id": "show_more", "title": "Show me more"},
                     ],
                 )
@@ -618,7 +726,12 @@ IMPORTANT RULES:
 
             state.stage = OnboardingStage.ALTERNATIVE_THERAPISTS
             return FlowResponse(
-                messages=[f"No problem! Here are two other therapists:\n\n{alt_cards}\n\nStill not sure?\n• Talk to our Care team"],
+                messages=[f"No problem! Here are two other therapists:\n\n{alt_cards}"],
+                buttons=[
+                    {"id": "book_session", "title": "Book a session"},
+                    {"id": "browse_directory", "title": "Browse all experts"},
+                    {"id": "talk_to_team", "title": "Talk to Care team"},
+                ],
             )
 
     def _handle_alternative_therapists(self, state: LumiUserState, message: str) -> FlowResponse:
@@ -629,10 +742,13 @@ IMPORTANT RULES:
             state.stage = OnboardingStage.HUMAN_HANDOFF
             state.handoff_reason = "user_request"
             return FlowResponse(
-                messages=[HUMAN_HANDOFF_MESSAGE.format(care_specialist_name="our Care Specialist")],
+                messages=[HUMAN_HANDOFF_MESSAGE],
                 is_handoff=True,
                 handoff_reason="user_request",
             )
+
+        if "browse" in message_lower or "directory" in message_lower or "all experts" in message_lower:
+            return FlowResponse(messages=[EXPERT_DIRECTORY_CTA])
 
         state.stage = OnboardingStage.BOOKING
         return FlowResponse(
