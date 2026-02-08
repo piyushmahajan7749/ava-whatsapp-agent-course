@@ -23,7 +23,7 @@ from fastapi import APIRouter, Request, Response
 
 from ai_companion.settings import settings
 from ai_companion.modules.interakt import get_interakt_client
-from ai_companion.modules.lumi import get_user_state, OnboardingStage
+from ai_companion.modules.lumi import get_user_state, delete_user_state, OnboardingStage
 from ai_companion.modules.lumi.flow_handler import get_flow_handler
 
 # Configure logging
@@ -358,4 +358,21 @@ async def interakt_health_check() -> dict:
         "interakt_configured": interakt_client is not None,
         "allowlist_active": bool(_get_allowlist_numbers()),
         "allowlist_count": len(_get_allowlist_numbers()),
+    }
+
+
+@interakt_router.post("/lumi_reset/{phone_number}")
+async def lumi_reset_user(phone_number: str) -> dict:
+    """Reset Lumi conversation state for a phone number (for testing)."""
+    phone_number = _normalize_phone_number(phone_number)
+    state = get_user_state(phone_number)
+    if not state:
+        return {"status": "not_found", "phone_number": phone_number}
+
+    deleted = delete_user_state(phone_number)
+    logger.info(f"[INTERAKT_WEBHOOK] Reset user state for {phone_number}: {deleted}")
+    return {
+        "status": "reset" if deleted else "error",
+        "phone_number": phone_number,
+        "previous_stage": state.stage.value if state.stage else None,
     }
