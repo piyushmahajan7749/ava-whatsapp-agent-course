@@ -155,7 +155,7 @@ class InteraktClient:
         payload = {
             "countryCode": country_code,
             "phoneNumber": local_number,
-            "type": "Button",
+            "type": "InteractiveButton",
             "data": {
                 "body": body_text,
                 "buttons": button_actions,
@@ -220,7 +220,7 @@ class InteraktClient:
         payload = {
             "countryCode": country_code,
             "phoneNumber": local_number,
-            "type": "List",
+            "type": "InteractiveList",
             "data": {
                 "body": body_text,
                 "buttonText": button_text,
