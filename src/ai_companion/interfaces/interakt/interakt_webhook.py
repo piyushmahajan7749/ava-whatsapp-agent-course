@@ -305,30 +305,19 @@ async def _send_messages(
         if not messages:
             return True
 
-        # Send all messages except the last as plain text
+        # Send all messages as plain text
         for msg in messages[:-1]:
             await interakt_client.send_text_message(phone_number, msg)
 
-        # Send last message with buttons if provided
+        # For the last message, append button options as text if provided
         last_message = messages[-1]
         if buttons and len(buttons) > 0:
-            # WhatsApp button body limit is 1024 chars
-            if len(last_message) > 1024:
-                # Body too long for button message, send text first then buttons
-                await interakt_client.send_text_message(phone_number, last_message)
-                await interakt_client.send_button_message(
-                    phone_number,
-                    body_text="What would you like to do?",
-                    buttons=buttons,
-                )
-            else:
-                await interakt_client.send_button_message(
-                    phone_number,
-                    body_text=last_message,
-                    buttons=buttons,
-                )
-        else:
-            await interakt_client.send_text_message(phone_number, last_message)
+            options_text = "\n".join(
+                f"• {btn['title']}" for btn in buttons
+            )
+            last_message = f"{last_message}\n\n{options_text}"
+
+        await interakt_client.send_text_message(phone_number, last_message)
 
         return True
 
