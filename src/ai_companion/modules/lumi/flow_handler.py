@@ -353,23 +353,26 @@ IMPORTANT RULES:
         stage = state.stage
         logger.info(f"[LUMI_FLOW] Processing stage {stage} for {state.phone_number}")
 
+        # Handle post-matching stages based on CURRENT stage (not next stage)
+        # These stages are not in the linear stage_order and handle their own transitions
+        if stage == OnboardingStage.MATCH_REVEAL:
+            return await self._handle_match_reveal(state, message)
+        elif stage == OnboardingStage.ALTERNATIVE_THERAPISTS:
+            return self._handle_alternative_therapists(state, message)
+        elif stage == OnboardingStage.BOOKING:
+            return self._handle_booking(state, message)
+        elif stage == OnboardingStage.CONFIRMED:
+            return self._handle_confirmed(state, message)
+
         # Extract data from message based on stage
         self._extract_stage_data(state, message, stage)
 
         # Determine next stage
         next_stage = self._get_next_stage(stage, state, message)
 
-        # Special handling for certain stages
+        # Handle processing (therapist matching)
         if next_stage == OnboardingStage.PROCESSING:
             return await self._handle_processing(state, message)
-        elif next_stage == OnboardingStage.MATCH_REVEAL:
-            return await self._handle_match_reveal(state, message)
-        elif next_stage == OnboardingStage.ALTERNATIVE_THERAPISTS:
-            return self._handle_alternative_therapists(state, message)
-        elif next_stage == OnboardingStage.BOOKING:
-            return self._handle_booking(state, message)
-        elif next_stage == OnboardingStage.CONFIRMED:
-            return self._handle_confirmed(state, message)
 
         # Move to next stage and generate response
         state.stage = next_stage
