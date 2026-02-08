@@ -111,6 +111,13 @@ class FlowResponse:
     new_state: Optional[LumiUserState] = None
 
 
+TERMINAL_STAGES = {
+    OnboardingStage.CONFIRMED,
+    OnboardingStage.HUMAN_HANDOFF,
+    OnboardingStage.ARCHIVED,
+}
+
+
 class LumiFlowHandler:
     """Handler for Lumi onboarding conversation flow with LLM integration."""
 
@@ -147,6 +154,14 @@ class LumiFlowHandler:
             welcome_response = await self._generate_welcome(state, message_text)
             save_user_state(state)
             return welcome_response
+
+        # Terminal states: conversation is over, do not respond
+        if state.stage in TERMINAL_STAGES:
+            logger.info(
+                f"[LUMI_FLOW] Ignoring message from {phone_number} — "
+                f"conversation is in terminal state: {state.stage}"
+            )
+            return FlowResponse(messages=[])
 
         # Update last message timestamp
         state.last_message_at = datetime.now()
@@ -361,8 +376,6 @@ IMPORTANT RULES:
             return self._handle_alternative_therapists(state, message)
         elif stage == OnboardingStage.BOOKING:
             return self._handle_booking(state, message)
-        elif stage == OnboardingStage.CONFIRMED:
-            return self._handle_confirmed(state, message)
 
         # Extract data from message based on stage
         self._extract_stage_data(state, message, stage)
@@ -646,13 +659,6 @@ IMPORTANT RULES:
             messages=["Please confirm to proceed with your booking."],
             buttons=[{"id": "confirm", "title": "I confirm"}],
         )
-
-    def _handle_confirmed(self, state: LumiUserState, message: str) -> FlowResponse:
-        """Handle post-confirmation messages."""
-        return FlowResponse(
-            messages=["Got questions? Just reply here — I'm always around. 🌱"]
-        )
-
 
 # Module-level handler instance
 _handler: Optional[LumiFlowHandler] = None
