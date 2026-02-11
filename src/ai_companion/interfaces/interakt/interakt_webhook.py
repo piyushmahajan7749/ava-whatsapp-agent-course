@@ -11,6 +11,7 @@ Handles incoming webhooks from Interakt with:
 - Lumi onboarding flow integration
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -40,6 +41,18 @@ interakt_router = APIRouter(tags=["interakt"])
 # Message tracking for loop prevention
 _processed_message_ids: Dict[str, datetime] = {}
 MESSAGE_TRACKING_WINDOW = timedelta(minutes=10)
+
+# Per-user locks to prevent concurrent processing of messages from the same user.
+# Without this, two simultaneous webhook calls for the same phone number can
+# interleave state reads/writes, causing conversation history to be lost.
+_user_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _get_user_lock(phone_number: str) -> asyncio.Lock:
+    """Get or create an asyncio lock for a specific phone number."""
+    if phone_number not in _user_locks:
+        _user_locks[phone_number] = asyncio.Lock()
+    return _user_locks[phone_number]
 
 
 def _verify_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
@@ -212,12 +225,6 @@ async def interakt_webhook_handler(request: Request) -> Response:
             logger.info(f"[INTERAKT_WEBHOOK] {phone_number} not in allowlist")
             return Response(content="OK (not in allowlist)", status_code=200)
 
-        # Check if user is in handoff state - don't respond
-        user_state = get_user_state(phone_number)
-        if user_state and user_state.stage == OnboardingStage.HUMAN_HANDOFF:
-            logger.info(f"[INTERAKT_WEBHOOK] {phone_number} in human handoff - not responding")
-            return Response(content="OK (human handoff)", status_code=200)
-
         # Support text, button, and list messages
         supported_types = ("Text", "text", "Button", "button", "List", "list")
         if content_type not in supported_types:
@@ -234,39 +241,48 @@ async def interakt_webhook_handler(request: Request) -> Response:
                 or message_text
             )
 
-        # Process with Lumi flow
-        flow_handler = get_flow_handler()
+        # Serialize all processing for the same phone number to prevent
+        # concurrent state reads/writes from corrupting conversation history.
+        async with _get_user_lock(phone_number):
+            # Check if user is in handoff state - don't respond
+            user_state = get_user_state(phone_number)
+            if user_state and user_state.stage == OnboardingStage.HUMAN_HANDOFF:
+                logger.info(f"[INTERAKT_WEBHOOK] {phone_number} in human handoff - not responding")
+                return Response(content="OK (human handoff)", status_code=200)
 
-        flow_response = await flow_handler.handle_message(
-            phone_number=phone_number,
-            message_text=message_text,
-            is_button_response=is_button,
-        )
+            # Process with Lumi flow
+            flow_handler = get_flow_handler()
 
-        # If crisis or handoff, log but don't send AI response
-        if flow_response.is_crisis:
-            logger.warning(f"[INTERAKT_WEBHOOK] CRISIS for {phone_number}")
-            # Send crisis resources, then stop AI responses
-            await _send_messages(phone_number, flow_response.messages)
-            return Response(content="OK (crisis - handed off)", status_code=200)
-
-        if flow_response.is_handoff:
-            logger.info(f"[INTERAKT_WEBHOOK] Handoff for {phone_number}: {flow_response.handoff_reason}")
-            # Send handoff message, then stop AI responses
-            await _send_messages(phone_number, flow_response.messages)
-            return Response(content="OK (handed off)", status_code=200)
-
-        # Send responses
-        if flow_response.messages:
-            await _send_messages(phone_number, flow_response.messages, flow_response.buttons)
-
-        # Send friction message separately (if present)
-        if flow_response.friction_message:
-            await _send_messages(
-                phone_number,
-                [flow_response.friction_message],
-                flow_response.friction_buttons,
+            flow_response = await flow_handler.handle_message(
+                phone_number=phone_number,
+                message_text=message_text,
+                is_button_response=is_button,
             )
+
+            # If crisis or handoff, log but don't send AI response
+            if flow_response.is_crisis:
+                logger.warning(f"[INTERAKT_WEBHOOK] CRISIS for {phone_number}")
+                # Send crisis resources, then stop AI responses
+                await _send_messages(phone_number, flow_response.messages)
+                return Response(content="OK (crisis - handed off)", status_code=200)
+
+            if flow_response.is_handoff:
+                logger.info(f"[INTERAKT_WEBHOOK] Handoff for {phone_number}: {flow_response.handoff_reason}")
+                # Send handoff message, then stop AI responses
+                await _send_messages(phone_number, flow_response.messages)
+                return Response(content="OK (handed off)", status_code=200)
+
+            # Send responses
+            if flow_response.messages:
+                await _send_messages(phone_number, flow_response.messages, flow_response.buttons)
+
+            # Send friction message separately (if present)
+            if flow_response.friction_message:
+                await _send_messages(
+                    phone_number,
+                    [flow_response.friction_message],
+                    flow_response.friction_buttons,
+                )
 
         logger.info(f"[INTERAKT_WEBHOOK] Processed message for {phone_number}")
         return Response(content="OK", status_code=200)
