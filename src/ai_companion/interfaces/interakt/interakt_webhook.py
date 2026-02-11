@@ -313,6 +313,13 @@ async def interakt_webhook_handler(request: Request) -> Response:
                 logger.info(f"[INTERAKT_WEBHOOK] Handoff for {phone_number}: {flow_response.handoff_reason}")
                 # Send handoff message, then stop AI responses
                 await _send_messages(phone_number, flow_response.messages)
+                # Tag as warm lead on handoff
+                try:
+                    interakt_client = get_interakt_client()
+                    if interakt_client:
+                        await interakt_client.tag_user(phone_number, ["Warm Lead Close ASAP"])
+                except Exception as e:
+                    logger.error(f"[INTERAKT_WEBHOOK] Failed to tag user: {e}")
                 return Response(content="OK (handed off)", status_code=200)
 
             # Send responses

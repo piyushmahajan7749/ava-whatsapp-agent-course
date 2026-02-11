@@ -312,7 +312,7 @@ class InteraktClient:
                 result = response.json() if response.content else {}
                 logger.info(f"[INTERAKT] Tag response status: {response.status_code}")
 
-                if response.status_code not in (200, 201):
+                if response.status_code not in (200, 201, 202):
                     logger.error(
                         f"[INTERAKT] Tag failed: {response.status_code} - {result}"
                     )

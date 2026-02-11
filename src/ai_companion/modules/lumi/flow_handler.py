@@ -199,7 +199,10 @@ class LumiFlowHandler:
             state.handoff_reason = handoff_decision.reason
             save_user_state(state)
             return FlowResponse(
-                messages=[HUMAN_HANDOFF_MESSAGE],
+                messages=[
+                    HUMAN_HANDOFF_MESSAGE,
+                    "I'm handing you over to our Care team now. If you need me again, just send a message anytime!",
+                ],
                 is_handoff=True,
                 handoff_reason=handoff_decision.reason,
                 new_state=state,
@@ -479,6 +482,18 @@ IMPORTANT RULES:
                 and not state.medications):
             return FlowResponse(messages=[MEDICATION_YES_FOLLOWUP])
 
+        # Therapist Style: multi-select loop (WhatsApp lists are single-select)
+        if stage == OnboardingStage.THERAPIST_STYLE and state.therapist_style:
+            last_pick = state.therapist_style[-1]
+            if last_pick != "Not sure":
+                # If user didn't say "no"/"done", ask if they want to add more
+                decline_words = {"no", "nope", "done", "that's it", "that's all", "no thanks"}
+                if message.lower().strip() not in decline_words:
+                    return FlowResponse(
+                        messages=[f"Got it, {last_pick}! Would you like to add another preference, or are we good?"],
+                        list_options=self._get_stage_list_options(stage),
+                    )
+
         # Determine next stage
         next_stage = self._get_next_stage(stage, state, message)
 
@@ -573,9 +588,22 @@ IMPORTANT RULES:
                 state.language = message.strip().capitalize()
 
         elif stage == OnboardingStage.THERAPIST_STYLE:
-            styles = {"warm": "Warm & nurturing", "structured": "Structured & direct",
-                     "queer": "Queer-affirming", "trauma": "Trauma-informed"}
-            for key, value in styles.items():
+            # Skip "no"/"done" responses (answers to "add another?" multi-select prompt)
+            skip_words = {"no", "nope", "done", "that's it", "that's all", "no thanks"}
+            if message_lower.strip() in skip_words:
+                return
+            style_map = {
+                "warm": "Warm & nurturing",
+                "structured": "Structured & direct",
+                "blend": "A blend of both",
+                "queer": "Queer-affirming",
+                "trauma": "Trauma-informed",
+                "cultural": "Culturally aware",
+                "holistic": "Holistic",
+                "solution": "Solution-focused",
+                "not sure": "Not sure",
+            }
+            for key, value in style_map.items():
                 if key in message_lower and value not in state.therapist_style:
                     state.therapist_style.append(value)
 
@@ -679,6 +707,23 @@ IMPORTANT RULES:
                         {"id": "kannada", "title": "Kannada"},
                         {"id": "malayalam", "title": "Malayalam"},
                         {"id": "punjabi", "title": "Punjabi"},
+                    ],
+                }],
+            },
+            OnboardingStage.THERAPIST_STYLE: {
+                "button_text": "Choose style",
+                "sections": [{
+                    "title": "Therapist Style",
+                    "rows": [
+                        {"id": "warm", "title": "Warm & nurturing"},
+                        {"id": "structured", "title": "Structured & direct"},
+                        {"id": "blend", "title": "A blend of both"},
+                        {"id": "queer", "title": "Queer-affirming"},
+                        {"id": "trauma", "title": "Trauma-informed"},
+                        {"id": "cultural", "title": "Culturally aware"},
+                        {"id": "holistic", "title": "Holistic"},
+                        {"id": "solution", "title": "Solution-focused"},
+                        {"id": "not_sure", "title": "I'm not sure"},
                     ],
                 }],
             },
