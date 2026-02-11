@@ -26,13 +26,17 @@ from ai_companion.settings import settings
 from ai_companion.modules.interakt import get_interakt_client
 from ai_companion.modules.lumi import get_user_state, delete_user_state, clear_all_user_states, OnboardingStage
 from ai_companion.modules.lumi.flow_handler import get_flow_handler
+from ai_companion.modules.lumi.transcribe import transcribe_audio
 
-# Configure logging
+# Configure logging — quiet down noisy libraries
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Router for Interakt webhooks
@@ -225,15 +229,54 @@ async def interakt_webhook_handler(request: Request) -> Response:
             logger.info(f"[INTERAKT_WEBHOOK] {phone_number} not in allowlist")
             return Response(content="OK (not in allowlist)", status_code=200)
 
-        # Support text, button, and list messages
-        supported_types = ("Text", "text", "Button", "button", "List", "list")
+        # Support text, button, list, interactive replies, and audio messages
+        supported_types = (
+            "Text", "text", "Button", "button", "List", "list",
+            "Audio", "audio", "InteractiveButtonReply", "InteractiveListReply",
+        )
         if content_type not in supported_types:
             logger.info(f"[INTERAKT_WEBHOOK] Unsupported content: {content_type}")
             return Response(content="OK (unsupported content)", status_code=200)
 
+        # Handle voice notes: transcribe audio to text
+        if content_type.lower() == "audio":
+            media_url = message_data.get("media_url", "")
+            if not media_url:
+                logger.warning(f"[INTERAKT_WEBHOOK] Audio message with no media_url")
+                return Response(content="OK (no audio url)", status_code=200)
+
+            logger.info(f"[INTERAKT_WEBHOOK] Transcribing voice note from {phone_number}")
+            transcribed_text = await transcribe_audio(media_url)
+            if not transcribed_text:
+                # Transcription failed — let user know
+                interakt_client = get_interakt_client()
+                if interakt_client:
+                    await interakt_client.send_text_message(
+                        phone_number,
+                        "I couldn't quite catch that voice note. Could you try typing it out instead?"
+                    )
+                return Response(content="OK (transcription failed)", status_code=200)
+
+            message_text = transcribed_text
+            logger.info(f"[INTERAKT_WEBHOOK] Transcribed: {message_text[:100]}")
+
         # For button/list replies, extract the selection title
-        is_button = content_type.lower() in ("button", "list")
+        is_button = content_type.lower() in ("button", "list", "interactivebuttonreply", "interactivelistreply")
         if is_button:
+            # InteractiveButtonReply/InteractiveListReply send message as a JSON string like:
+            # '{"type": "button_reply", "button_reply": {"id": "x", "title": "Y"}}'
+            # '{"type": "list_reply", "list_reply": {"id": "x", "title": "Y"}}'
+            if content_type in ("InteractiveButtonReply", "InteractiveListReply") and message_text:
+                try:
+                    parsed = json.loads(message_text)
+                    message_text = (
+                        parsed.get("button_reply", {}).get("title", "")
+                        or parsed.get("list_reply", {}).get("title", "")
+                        or message_text
+                    )
+                except (json.JSONDecodeError, TypeError):
+                    pass  # Fall through to other extraction methods
+
             message_text = (
                 message_data.get("selectedOption", {}).get("title", "")
                 or message_data.get("button_reply", {}).get("title", "")
@@ -274,7 +317,12 @@ async def interakt_webhook_handler(request: Request) -> Response:
 
             # Send responses
             if flow_response.messages:
-                await _send_messages(phone_number, flow_response.messages, flow_response.buttons)
+                await _send_messages(
+                    phone_number,
+                    flow_response.messages,
+                    flow_response.buttons,
+                    flow_response.list_options,
+                )
 
             # Send friction message separately (if present)
             if flow_response.friction_message:
@@ -283,6 +331,15 @@ async def interakt_webhook_handler(request: Request) -> Response:
                     [flow_response.friction_message],
                     flow_response.friction_buttons,
                 )
+
+            # Tag user as warm lead on successful flow completion
+            if user_state and user_state.stage == OnboardingStage.CONFIRMED:
+                try:
+                    interakt_client = get_interakt_client()
+                    if interakt_client:
+                        await interakt_client.tag_user(phone_number, ["Warm Lead Close ASAP"])
+                except Exception as e:
+                    logger.error(f"[INTERAKT_WEBHOOK] Failed to tag user: {e}")
 
         logger.info(f"[INTERAKT_WEBHOOK] Processed message for {phone_number}")
         return Response(content="OK", status_code=200)
@@ -297,17 +354,19 @@ async def _send_messages(
     phone_number: str,
     messages: list,
     buttons: Optional[list] = None,
+    list_options: Optional[dict] = None,
 ) -> bool:
     """
     Send messages via Interakt.
 
     Sends all messages as plain text except the last one, which is sent
-    with interactive buttons if buttons are provided.
+    with interactive buttons/list if provided.
 
     Args:
         phone_number: User's phone number
         messages: List of message strings to send
-        buttons: Optional button options for last message
+        buttons: Optional button options for last message (max 3)
+        list_options: Optional list config {"button_text": str, "sections": list}
 
     Returns:
         True if all messages sent successfully
@@ -325,15 +384,21 @@ async def _send_messages(
         for msg in messages[:-1]:
             await interakt_client.send_text_message(phone_number, msg)
 
-        # For the last message, append button options as text if provided
+        # Last message: send with interactive buttons, list, or plain text
         last_message = messages[-1]
-        if buttons and len(buttons) > 0:
-            options_text = "\n".join(
-                f"• {btn['title']}" for btn in buttons
+        if list_options:
+            await interakt_client.send_list_message(
+                phone_number,
+                last_message,
+                list_options["button_text"],
+                list_options["sections"],
             )
-            last_message = f"{last_message}\n\n{options_text}"
-
-        await interakt_client.send_text_message(phone_number, last_message)
+        elif buttons and len(buttons) > 0:
+            await interakt_client.send_button_message(
+                phone_number, last_message, buttons
+            )
+        else:
+            await interakt_client.send_text_message(phone_number, last_message)
 
         return True
 

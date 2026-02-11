@@ -123,8 +123,15 @@ class LumiUserState(BaseModel):
         use_enum_values = True
 
 
+_resolved_db_path: str | None = None
+
+
 def _get_db_path() -> str:
-    """Get the database path, with fallback for local development."""
+    """Get the database path, with fallback for local development. Caches result."""
+    global _resolved_db_path
+    if _resolved_db_path is not None:
+        return _resolved_db_path
+
     import os
 
     primary_path = settings.SHORT_TERM_MEMORY_DB_PATH
@@ -132,22 +139,17 @@ def _get_db_path() -> str:
 
     # Check if primary path exists or can be created
     if os.path.exists(primary_path):
-        return primary_path
+        _resolved_db_path = primary_path
+    elif os.path.exists(os.path.dirname(primary_path)):
+        _resolved_db_path = primary_path
+    elif os.path.exists(alternative_path) or os.path.exists(os.path.dirname(alternative_path)):
+        _resolved_db_path = alternative_path
+    else:
+        os.makedirs(os.path.dirname(alternative_path), exist_ok=True)
+        _resolved_db_path = alternative_path
 
-    # Check parent directory exists
-    primary_dir = os.path.dirname(primary_path)
-    if os.path.exists(primary_dir):
-        return primary_path
-
-    # Use alternative path for local development
-    if os.path.exists(alternative_path) or os.path.exists(os.path.dirname(alternative_path)):
-        logger.info(f"[LUMI_STATE] Using alternative DB path: {alternative_path}")
-        return alternative_path
-
-    # Create alternative directory if needed
-    os.makedirs(os.path.dirname(alternative_path), exist_ok=True)
-    logger.info(f"[LUMI_STATE] Created directory, using: {alternative_path}")
-    return alternative_path
+    logger.info(f"[LUMI_STATE] DB path: {_resolved_db_path}")
+    return _resolved_db_path
 
 
 def _get_db_connection() -> sqlite3.Connection:
@@ -178,7 +180,7 @@ def _ensure_table_exists():
         """
         )
         conn.commit()
-        logger.debug("[LUMI_STATE] Table ensured")
+        logger.debug("[LUMI_STATE] Table OK")
     finally:
         conn.close()
 

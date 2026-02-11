@@ -152,21 +152,27 @@ class InteraktClient:
                 {"type": "reply", "reply": {"id": btn["id"], "title": btn["title"][:20]}}
             )
 
+        # Interakt requires "message" to be a nested object following WhatsApp's
+        # interactive message schema (not a plain string).
+        interactive_message = {
+            "type": "button",
+            "body": {"text": body_text},
+            "action": {"buttons": button_actions},
+        }
+
+        if header_text:
+            interactive_message["header"] = {"type": "text", "text": header_text}
+        if footer_text:
+            interactive_message["footer"] = {"text": footer_text}
+
         payload = {
             "countryCode": country_code,
             "phoneNumber": local_number,
             "type": "InteractiveButton",
             "data": {
-                "message": body_text,
-                "body": body_text,
-                "buttons": button_actions,
+                "message": interactive_message,
             },
         }
-
-        if header_text:
-            payload["data"]["header"] = {"type": "text", "text": header_text}
-        if footer_text:
-            payload["data"]["footer"] = footer_text
 
         logger.info(f"[INTERAKT] Sending button message to +{country_code}{local_number}")
         logger.debug(f"[INTERAKT] Payload: {payload}")
@@ -218,22 +224,30 @@ class InteraktClient:
         """
         country_code, local_number = self._parse_phone_number(phone_number)
 
-        payload = {
-            "countryCode": country_code,
-            "phoneNumber": local_number,
-            "type": "InteractiveList",
-            "data": {
-                "message": body_text,
-                "body": body_text,
-                "buttonText": button_text,
+        # Interakt requires "message" to be a nested object following WhatsApp's
+        # interactive message schema (same as button messages).
+        interactive_message = {
+            "type": "list",
+            "body": {"text": body_text},
+            "action": {
+                "button": button_text,
                 "sections": sections,
             },
         }
 
         if header_text:
-            payload["data"]["header"] = {"type": "text", "text": header_text}
+            interactive_message["header"] = {"type": "text", "text": header_text}
         if footer_text:
-            payload["data"]["footer"] = footer_text
+            interactive_message["footer"] = {"text": footer_text}
+
+        payload = {
+            "countryCode": country_code,
+            "phoneNumber": local_number,
+            "type": "InteractiveList",
+            "data": {
+                "message": interactive_message,
+            },
+        }
 
         logger.info(f"[INTERAKT] Sending list message to +{country_code}{local_number}")
 
@@ -256,6 +270,57 @@ class InteraktClient:
 
             except httpx.HTTPError as e:
                 logger.error(f"[INTERAKT] HTTP error: {e}")
+                raise
+
+    async def tag_user(
+        self,
+        phone_number: str,
+        tags: List[str],
+    ) -> Dict:
+        """
+        Add tags/labels to a user in Interakt via Track Users API.
+
+        Tags are add-only — they append to existing tags, never replace.
+
+        Args:
+            phone_number: User's phone number in E.164 format (no +), e.g., "919303402193"
+            tags: List of tag strings, e.g., ["Warm Lead Close ASAP"]
+
+        Returns:
+            API response dictionary
+        """
+        country_code, local_number = self._parse_phone_number(phone_number)
+
+        payload = {
+            "phoneNumber": local_number,
+            "countryCode": f"+{country_code}",
+            "tags": tags,
+        }
+
+        track_url = "https://api.interakt.ai/v1/public/track/users/"
+
+        logger.info(f"[INTERAKT] Tagging user +{country_code}{local_number} with {tags}")
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                response = await client.post(
+                    track_url,
+                    headers=self.headers,
+                    json=payload,
+                )
+
+                result = response.json() if response.content else {}
+                logger.info(f"[INTERAKT] Tag response status: {response.status_code}")
+
+                if response.status_code not in (200, 201):
+                    logger.error(
+                        f"[INTERAKT] Tag failed: {response.status_code} - {result}"
+                    )
+
+                return {"status_code": response.status_code, "response": result}
+
+            except httpx.HTTPError as e:
+                logger.error(f"[INTERAKT] HTTP error tagging user: {e}")
                 raise
 
 

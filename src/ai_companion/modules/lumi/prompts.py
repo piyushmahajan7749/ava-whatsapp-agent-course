@@ -74,7 +74,11 @@ Feel free to type it out or send me a voice note, whatever feels easier for you.
     OnboardingStage.THERAPY_HISTORY: """Have you tried therapy before?""",
 
     # Stage 5: Care Preferences
-    OnboardingStage.CARE_PREFERENCES: """What kind of support feels right for you?""",
+    OnboardingStage.CARE_PREFERENCES: """What kind of support feels right for you?
+
+• Full care plan — therapy + lifestyle support for sleep, movement, nutrition
+• Just therapy — one-on-one sessions with a therapist
+• Not sure yet — and that's totally okay!""",
 
     # Stage 6: Medication History
     OnboardingStage.MEDICATION: """Quick question. Are you currently taking any medications for your mental health?""",

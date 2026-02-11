@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     AZURE_OPENAI_API_ENDPOINT: str
     AZURE_OPENAI_API_VERSION: str
     AZURE_OPENAI_VISION_DEPLOYMENT: str
+    AZURE_WHISPER_DEPLOYMENT: str = "whisper"
 
     QDRANT_API_KEY: str | None
     QDRANT_URL: str

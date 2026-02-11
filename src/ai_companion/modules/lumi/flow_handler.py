@@ -29,13 +29,11 @@ from ai_companion.modules.lumi.prompts import (
     CARE_PREFERENCE_NOT_SURE,
     MEDICATION_YES_FOLLOWUP,
     THERAPIST_STYLE_NOT_SURE,
-    FRICTION_CHECKPOINT,
     FRICTION_CYCLING_OPTIONS,
     HUMAN_HANDOFF_MESSAGE,
     CRISIS_RESPONSE,
     FAQ_SYSTEM_PROMPT_SECTION,
     WHATSAPP_COMMUNITY_CTA,
-    VITALITY_SCORE_CTA,
     EXPERT_DIRECTORY_CTA,
 )
 from ai_companion.modules.lumi.crisis_detector import check_for_crisis
@@ -89,8 +87,6 @@ STAGE_GUIDANCE = {
 
     OnboardingStage.PERSONAL_CONTEXT: """Ask about their relationship status. Keep it casual. Do NOT list options, buttons will be shown automatically.""",
 
-    OnboardingStage.PERSONAL_DOB: """Ask for their date of birth in DD/MM/YYYY format. Explain it helps with records.""",
-
     OnboardingStage.PERSONAL_CITY: """Ask which city they're based in.""",
 
     OnboardingStage.PROCESSING: """Let them know you're finding the right match. Build some anticipation.""",
@@ -109,6 +105,7 @@ class FlowResponse:
 
     messages: List[str]
     buttons: Optional[List[dict]] = None
+    list_options: Optional[dict] = None  # {"button_text": str, "sections": list}
     friction_message: Optional[str] = None
     friction_buttons: Optional[List[dict]] = None
     is_handoff: bool = False
@@ -230,25 +227,6 @@ class LumiFlowHandler:
         # Process based on current stage
         response = await self._process_stage(state, message_text, is_button_response)
 
-        # Add friction CTA as separate message (not appended to stage response)
-        if friction_decision.is_friction and not response.is_handoff:
-            if friction_decision.should_offer_handoff:
-                # Multiple friction signals: full CTA menu
-                community_note = f"\nOr join our safe space: https://chat.whatsapp.com/LklnvbTjMm7LXexSEh7LGG?mode=gi_t"
-                response.friction_message = FRICTION_CHECKPOINT + community_note
-                response.friction_buttons = [
-                    {"id": "continue_lumi", "title": "Keep going with Lumi"},
-                    {"id": "vitality_score", "title": "Take Vitality Score"},
-                    {"id": "talk_to_team", "title": "Book a call"},
-                ]
-            elif state.friction_detected_count <= 1:
-                # First friction: gentle nudge with Vitality Score
-                response.friction_message = VITALITY_SCORE_CTA
-                response.friction_buttons = [
-                    {"id": "continue_lumi", "title": "Let's keep going"},
-                    {"id": "vitality_score", "title": "Take the quiz"},
-                ]
-
         # Add AI response to history
         for msg in response.messages:
             state.conversation_history.append({
@@ -266,7 +244,7 @@ class LumiFlowHandler:
         return response
 
     async def _generate_welcome(self, state: LumiUserState, user_message: str) -> FlowResponse:
-        """Generate welcome message for new users."""
+        """Generate welcome message for new users using fixed template."""
         state.stage = OnboardingStage.WELCOME
 
         # Add user's initial message to history
@@ -276,38 +254,20 @@ class LumiFlowHandler:
             "timestamp": datetime.now().isoformat()
         })
 
-        # Generate welcome with LLM
-        try:
-            response = await self._generate_llm_response(state, user_message)
+        # Use fixed welcome message for consistency
+        welcome_text = STAGE_MESSAGES[OnboardingStage.WELCOME]
 
-            # Add to history
-            state.conversation_history.append({
-                "role": "assistant",
-                "content": response,
-                "timestamp": datetime.now().isoformat()
-            })
+        # Add to history
+        state.conversation_history.append({
+            "role": "assistant",
+            "content": welcome_text,
+            "timestamp": datetime.now().isoformat()
+        })
 
-            # Move to demographics after welcome
-            state.stage = OnboardingStage.DEMOGRAPHICS
+        # Move to demographics after welcome
+        state.stage = OnboardingStage.DEMOGRAPHICS
 
-            return FlowResponse(
-                messages=[response],
-                buttons=[
-                    {"id": "sounds_good", "title": "Sounds good!"},
-                    {"id": "tell_me_more", "title": "Tell me more"},
-                ],
-            )
-        except Exception as e:
-            logger.error(f"[LUMI_FLOW] LLM error: {e}")
-            # Fallback to template
-            state.stage = OnboardingStage.DEMOGRAPHICS
-            return FlowResponse(
-                messages=[STAGE_MESSAGES[OnboardingStage.WELCOME]],
-                buttons=[
-                    {"id": "sounds_good", "title": "Sounds good!"},
-                    {"id": "tell_me_more", "title": "Tell me more"},
-                ],
-            )
+        return FlowResponse(messages=[welcome_text])
 
     async def _generate_llm_response(self, state: LumiUserState, user_message: str) -> str:
         """Generate a response using the LLM with conversation context."""
@@ -425,31 +385,36 @@ IMPORTANT RULES:
         if message_lower in ("keep going with lumi", "let's keep going", "let's keep going"):
             return None
 
-        # Vitality Score CTA
-        if message_lower in ("take vitality score", "take the quiz", "vitality score"):
-            return FlowResponse(messages=[VITALITY_SCORE_CTA])
-
         # WhatsApp Community CTA
         if message_lower in ("join our safe space", "join community"):
             return FlowResponse(messages=[WHATSAPP_COMMUNITY_CTA])
 
         # Expert Directory CTA
         if message_lower in ("browse all experts", "browse directory", "browse experts"):
-            return FlowResponse(messages=[EXPERT_DIRECTORY_CTA])
+            return FlowResponse(messages=[
+                EXPERT_DIRECTORY_CTA,
+                "Take your time browsing! I'm still here if you'd like to continue or have questions.",
+            ])
 
         # Browse all experts keyword detection
         if any(kw in message_lower for kw in [
             "all experts", "all therapists", "browse experts",
             "list of therapists", "expert directory", "see everyone",
         ]):
-            return FlowResponse(messages=[EXPERT_DIRECTORY_CTA])
+            return FlowResponse(messages=[
+                EXPERT_DIRECTORY_CTA,
+                "Take your time browsing! I'm still here if you'd like to continue or have questions.",
+            ])
 
         # Book a call / Talk to team -> Calendar handoff
         if message_lower in ("book a call", "talk to care team"):
             state.stage = OnboardingStage.HUMAN_HANDOFF
             state.handoff_reason = "user_request"
             return FlowResponse(
-                messages=[HUMAN_HANDOFF_MESSAGE],
+                messages=[
+                    HUMAN_HANDOFF_MESSAGE,
+                    "I'm handing you over to our Care team now. If you need me again, just send a message anytime!",
+                ],
                 is_handoff=True,
                 handoff_reason="user_request",
             )
@@ -473,6 +438,7 @@ IMPORTANT RULES:
                 return FlowResponse(
                     messages=[faq_response],
                     buttons=self._get_stage_buttons(stage),
+                    list_options=self._get_stage_list_options(stage),
                 )
             except Exception:
                 logger.warning("[LUMI_FLOW] FAQ response failed, continuing with normal flow")
@@ -489,6 +455,30 @@ IMPORTANT RULES:
         # Extract data from message based on stage
         self._extract_stage_data(state, message, stage)
 
+        # Therapy History: send fixed follow-up template based on answer
+        if stage == OnboardingStage.THERAPY_HISTORY and state.therapy_history:
+            followup = THERAPY_HISTORY_FOLLOWUPS.get(state.therapy_history)
+            if followup:
+                if state.therapy_history == "new":
+                    # "New" follow-up asks a question, stay on THERAPY_HISTORY
+                    # Mark as sent so we don't repeat it on the user's next reply
+                    state.therapy_history = "new_followup_sent"
+                    return FlowResponse(messages=[followup])
+                elif state.therapy_history != "new_followup_sent":
+                    # "didnt_stick" and "helped" are statements, advance to next stage
+                    state.stage = OnboardingStage.CARE_PREFERENCES
+                    return FlowResponse(
+                        messages=[followup],
+                        buttons=self._get_stage_buttons(OnboardingStage.CARE_PREFERENCES),
+                        list_options=self._get_stage_list_options(OnboardingStage.CARE_PREFERENCES),
+                    )
+
+        # Medication "Yes": send fixed follow-up asking for medication details
+        if (stage == OnboardingStage.MEDICATION
+                and state.on_medication
+                and not state.medications):
+            return FlowResponse(messages=[MEDICATION_YES_FOLLOWUP])
+
         # Determine next stage
         next_stage = self._get_next_stage(stage, state, message)
 
@@ -504,6 +494,7 @@ IMPORTANT RULES:
             return FlowResponse(
                 messages=[response_text],
                 buttons=self._get_stage_buttons(next_stage),
+                list_options=self._get_stage_list_options(next_stage),
             )
         except Exception as e:
             logger.error(f"[LUMI_FLOW] LLM error, using fallback: {e}")
@@ -512,6 +503,7 @@ IMPORTANT RULES:
             return FlowResponse(
                 messages=[template],
                 buttons=self._get_stage_buttons(next_stage),
+                list_options=self._get_stage_list_options(next_stage),
             )
 
     def _extract_stage_data(self, state: LumiUserState, message: str, stage: OnboardingStage):
@@ -543,12 +535,14 @@ IMPORTANT RULES:
                         state.trauma_flag = True
 
         elif stage == OnboardingStage.THERAPY_HISTORY:
-            if "didn't" in message_lower or "didnt" in message_lower:
-                state.therapy_history = "didnt_stick"
-            elif "helped" in message_lower:
-                state.therapy_history = "helped"
-            else:
-                state.therapy_history = "new"
+            # Don't overwrite if follow-up was already sent (user is responding to it)
+            if not state.therapy_history or state.therapy_history not in ("new_followup_sent", "didnt_stick", "helped"):
+                if "didn't" in message_lower or "didnt" in message_lower:
+                    state.therapy_history = "didnt_stick"
+                elif "helped" in message_lower:
+                    state.therapy_history = "helped"
+                else:
+                    state.therapy_history = "new"
 
         elif stage == OnboardingStage.CARE_PREFERENCES:
             if "full" in message_lower:
@@ -567,7 +561,10 @@ IMPORTANT RULES:
                 state.medications = message
 
         elif stage == OnboardingStage.LANGUAGE:
-            languages = ["hindi", "english", "tamil", "telugu", "bengali", "marathi"]
+            languages = [
+                "hindi", "english", "tamil", "telugu", "bengali",
+                "marathi", "gujarati", "kannada", "malayalam", "punjabi",
+            ]
             for lang in languages:
                 if lang in message_lower:
                     state.language = lang.capitalize()
@@ -591,18 +588,16 @@ IMPORTANT RULES:
                 state.therapist_gender_pref = "flexible"
 
         elif stage == OnboardingStage.PERSONAL_CONTEXT:
-            statuses = ["single", "married", "relationship", "divorced"]
+            statuses = ["single", "married", "relationship", "divorced", "separated", "widowed", "prefer not"]
             for s in statuses:
                 if s in message_lower:
-                    state.relationship_status = s
+                    if s in ("divorced", "separated"):
+                        state.relationship_status = "separated_divorced"
+                    elif "prefer" in s:
+                        state.relationship_status = "prefer_not_say"
+                    else:
+                        state.relationship_status = s
                     break
-
-        elif stage == OnboardingStage.PERSONAL_DOB:
-            dob_match = re.search(r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})", message)
-            if dob_match:
-                state.dob = f"{dob_match.group(1)}/{dob_match.group(2)}/{dob_match.group(3)}"
-            else:
-                state.dob = message.strip()
 
         elif stage == OnboardingStage.PERSONAL_CITY:
             state.city = message.strip()
@@ -621,7 +616,6 @@ IMPORTANT RULES:
             OnboardingStage.THERAPIST_STYLE,
             OnboardingStage.GENDER_PREFERENCE,
             OnboardingStage.PERSONAL_CONTEXT,
-            OnboardingStage.PERSONAL_DOB,
             OnboardingStage.PERSONAL_CITY,
             OnboardingStage.PROCESSING,
         ]
@@ -640,7 +634,7 @@ IMPORTANT RULES:
         return OnboardingStage.PROCESSING
 
     def _get_stage_buttons(self, stage: OnboardingStage) -> Optional[List[dict]]:
-        """Get appropriate buttons for a stage."""
+        """Get appropriate buttons for a stage (max 3, for WhatsApp reply buttons)."""
         buttons_map = {
             OnboardingStage.DEMOGRAPHICS: None,  # Free text
             OnboardingStage.STORY: None,  # Free text
@@ -658,23 +652,52 @@ IMPORTANT RULES:
                 {"id": "yes", "title": "Yes"},
                 {"id": "no", "title": "No"},
             ],
-            OnboardingStage.LANGUAGE: [
-                {"id": "hindi", "title": "Hindi"},
-                {"id": "english", "title": "English"},
-                {"id": "other", "title": "Other"},
-            ],
+            # Language and Personal Context use list messages (see _get_stage_list_options)
             OnboardingStage.GENDER_PREFERENCE: [
                 {"id": "man", "title": "Man"},
                 {"id": "woman", "title": "Woman"},
                 {"id": "flexible", "title": "I'm flexible"},
             ],
-            OnboardingStage.PERSONAL_CONTEXT: [
-                {"id": "single", "title": "Single"},
-                {"id": "married", "title": "Married"},
-                {"id": "relationship", "title": "In a relationship"},
-            ],
         }
         return buttons_map.get(stage)
+
+    def _get_stage_list_options(self, stage: OnboardingStage) -> Optional[dict]:
+        """Get list message options for stages with >3 choices."""
+        list_map = {
+            OnboardingStage.LANGUAGE: {
+                "button_text": "Choose language",
+                "sections": [{
+                    "title": "Languages",
+                    "rows": [
+                        {"id": "hindi", "title": "Hindi"},
+                        {"id": "english", "title": "English"},
+                        {"id": "tamil", "title": "Tamil"},
+                        {"id": "telugu", "title": "Telugu"},
+                        {"id": "bengali", "title": "Bengali"},
+                        {"id": "marathi", "title": "Marathi"},
+                        {"id": "gujarati", "title": "Gujarati"},
+                        {"id": "kannada", "title": "Kannada"},
+                        {"id": "malayalam", "title": "Malayalam"},
+                        {"id": "punjabi", "title": "Punjabi"},
+                    ],
+                }],
+            },
+            OnboardingStage.PERSONAL_CONTEXT: {
+                "button_text": "Choose status",
+                "sections": [{
+                    "title": "Relationship Status",
+                    "rows": [
+                        {"id": "single", "title": "Single"},
+                        {"id": "married", "title": "Married"},
+                        {"id": "relationship", "title": "In a relationship"},
+                        {"id": "divorced", "title": "Separated/Divorced"},
+                        {"id": "widowed", "title": "Widowed"},
+                        {"id": "prefer_not_say", "title": "Prefer not to say"},
+                    ],
+                }],
+            },
+        }
+        return list_map.get(stage)
 
     async def _handle_processing(self, state: LumiUserState, message: str) -> FlowResponse:
         """Handle the processing/matching stage."""
@@ -742,13 +765,19 @@ IMPORTANT RULES:
             state.stage = OnboardingStage.HUMAN_HANDOFF
             state.handoff_reason = "user_request"
             return FlowResponse(
-                messages=[HUMAN_HANDOFF_MESSAGE],
+                messages=[
+                    HUMAN_HANDOFF_MESSAGE,
+                    "I'm handing you over to our Care team now. If you need me again, just send a message anytime!",
+                ],
                 is_handoff=True,
                 handoff_reason="user_request",
             )
 
         if "browse" in message_lower or "directory" in message_lower or "all experts" in message_lower:
-            return FlowResponse(messages=[EXPERT_DIRECTORY_CTA])
+            return FlowResponse(messages=[
+                EXPERT_DIRECTORY_CTA,
+                "Take your time browsing! I'm still here if you'd like to continue or have questions.",
+            ])
 
         state.stage = OnboardingStage.BOOKING
         return FlowResponse(
@@ -764,14 +793,9 @@ IMPORTANT RULES:
             state.consent_acknowledged = True
             state.stage = OnboardingStage.CONFIRMED
 
-            confirmation = STAGE_MESSAGES[OnboardingStage.CONFIRMED].format(
-                therapist_name="your matched therapist",
-                date="[Date TBD]",
-                time="[Time TBD]",
-                care_specialist="Our Care Specialist",
-                prep_link="[link]",
-            )
-            return FlowResponse(messages=[confirmation])
+            return FlowResponse(messages=[
+                "Your preferences have been saved! Our Care Specialist will assist you shortly with the booking. We're excited to support your journey."
+            ])
 
         return FlowResponse(
             messages=["Please confirm to proceed with your booking."],
