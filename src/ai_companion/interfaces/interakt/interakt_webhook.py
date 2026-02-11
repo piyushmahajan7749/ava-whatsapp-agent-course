@@ -307,6 +307,13 @@ async def interakt_webhook_handler(request: Request) -> Response:
                 logger.warning(f"[INTERAKT_WEBHOOK] CRISIS for {phone_number}")
                 # Send crisis resources, then stop AI responses
                 await _send_messages(phone_number, flow_response.messages)
+                # Tag as SOS for immediate care team attention
+                try:
+                    interakt_client = get_interakt_client()
+                    if interakt_client:
+                        await interakt_client.tag_user(phone_number, ["SOS"])
+                except Exception as e:
+                    logger.error(f"[INTERAKT_WEBHOOK] Failed to tag crisis user: {e}")
                 return Response(content="OK (crisis - handed off)", status_code=200)
 
             if flow_response.is_handoff:
