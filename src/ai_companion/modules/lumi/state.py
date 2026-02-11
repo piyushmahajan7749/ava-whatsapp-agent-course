@@ -313,3 +313,26 @@ def get_stale_conversations(hours: int) -> List[LumiUserState]:
         return []
     finally:
         conn.close()
+
+
+def clear_all_user_states() -> int:
+    """
+    Delete ALL user states from the database. Use for a fresh start.
+
+    Returns:
+        Number of conversations deleted.
+    """
+    _ensure_table_exists()
+    conn = _get_db_connection()
+    try:
+        cursor = conn.execute("SELECT COUNT(*) FROM lumi_user_state")
+        count = cursor.fetchone()[0]
+        conn.execute("DELETE FROM lumi_user_state")
+        conn.commit()
+        logger.info(f"[LUMI_STATE] Cleared all user states ({count} conversations)")
+        return count
+    except Exception as e:
+        logger.error(f"[LUMI_STATE] Error clearing all states: {e}")
+        return 0
+    finally:
+        conn.close()

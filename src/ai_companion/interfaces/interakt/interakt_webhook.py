@@ -24,7 +24,7 @@ from fastapi import APIRouter, Request, Response
 
 from ai_companion.settings import settings
 from ai_companion.modules.interakt import get_interakt_client
-from ai_companion.modules.lumi import get_user_state, delete_user_state, OnboardingStage
+from ai_companion.modules.lumi import get_user_state, delete_user_state, clear_all_user_states, OnboardingStage
 from ai_companion.modules.lumi.flow_handler import get_flow_handler
 
 # Configure logging
@@ -380,4 +380,15 @@ async def lumi_reset_user(phone_number: str) -> dict:
         "status": "reset" if deleted else "error",
         "phone_number": phone_number,
         "previous_stage": state.stage.value if state.stage else None,
+    }
+
+
+@interakt_router.post("/lumi_clear_all")
+async def lumi_clear_all() -> dict:
+    """Clear ALL Lumi conversation states. Gives every user a fresh start."""
+    count = clear_all_user_states()
+    logger.info(f"[INTERAKT_WEBHOOK] Cleared all conversations: {count}")
+    return {
+        "status": "cleared",
+        "conversations_deleted": count,
     }
