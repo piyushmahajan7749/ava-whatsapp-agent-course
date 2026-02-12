@@ -482,17 +482,27 @@ IMPORTANT RULES:
                 and not state.medications):
             return FlowResponse(messages=[MEDICATION_YES_FOLLOWUP])
 
-        # Therapist Style: multi-select loop (WhatsApp lists are single-select)
+        # Therapist Style: ask once after first pick if they want to add another
         if stage == OnboardingStage.THERAPIST_STYLE and state.therapist_style:
             last_pick = state.therapist_style[-1]
-            if last_pick != "Not sure":
-                # If user didn't say "no"/"done", ask if they want to add more
-                decline_words = {"no", "nope", "done", "that's it", "that's all", "no thanks"}
-                if message.lower().strip() not in decline_words:
-                    return FlowResponse(
-                        messages=[f"Got it, {last_pick}! Would you like to add another preference, or are we good?"],
-                        list_options=self._get_stage_list_options(stage),
-                    )
+            # Only ask once (after first selection), then advance on any second response
+            if len(state.therapist_style) == 1 and last_pick != "Not sure":
+                already_picked = set(state.therapist_style)
+                remaining_rows = [
+                    row for row in self._get_stage_list_options(stage)["sections"][0]["rows"]
+                    if row["title"] not in already_picked
+                ]
+                followup_list = {
+                    "button_text": "Choose or done",
+                    "sections": [{
+                        "title": "Therapist Style",
+                        "rows": [{"id": "done", "title": "That's all, thanks!"}] + remaining_rows,
+                    }],
+                }
+                return FlowResponse(
+                    messages=[f"Got it, {last_pick}! Would you like to add another preference, or are we good?"],
+                    list_options=followup_list,
+                )
 
         # Determine next stage
         next_stage = self._get_next_stage(stage, state, message)
@@ -589,13 +599,12 @@ IMPORTANT RULES:
 
         elif stage == OnboardingStage.THERAPIST_STYLE:
             # Skip "no"/"done" responses (answers to "add another?" multi-select prompt)
-            skip_words = {"no", "nope", "done", "that's it", "that's all", "no thanks"}
+            skip_words = {"no", "nope", "done", "that's it", "that's all", "no thanks", "that's good", "i'm good", "that's all, thanks!"}
             if message_lower.strip() in skip_words:
                 return
             style_map = {
                 "warm": "Warm & nurturing",
                 "structured": "Structured & direct",
-                "blend": "A blend of both",
                 "queer": "Queer-affirming",
                 "trauma": "Trauma-informed",
                 "cultural": "Culturally aware",
@@ -717,7 +726,6 @@ IMPORTANT RULES:
                     "rows": [
                         {"id": "warm", "title": "Warm & nurturing"},
                         {"id": "structured", "title": "Structured & direct"},
-                        {"id": "blend", "title": "A blend of both"},
                         {"id": "queer", "title": "Queer-affirming"},
                         {"id": "trauma", "title": "Trauma-informed"},
                         {"id": "cultural", "title": "Culturally aware"},

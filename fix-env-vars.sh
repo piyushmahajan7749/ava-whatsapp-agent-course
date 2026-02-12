@@ -126,7 +126,7 @@ az containerapp update \
         ALLOWLIST_NUMBERS="${ALLOWLIST_NUMBERS:-}" \
         AZURE_WHISPER_DEPLOYMENT="${AZURE_WHISPER_DEPLOYMENT:-whisper}" \
         BOT_ENABLED="${BOT_ENABLED:-true}" \
-        SHORT_TERM_MEMORY_DB_PATH="/tmp/memory.db" \
+        SHORT_TERM_MEMORY_DB_PATH="/app/data/memory.db" \
         TEXT_MODEL_NAME="${TEXT_MODEL_NAME:-gpt-5-chat}" \
         SMALL_TEXT_MODEL_NAME="${SMALL_TEXT_MODEL_NAME:-gpt-5-mini}" \
         STT_MODEL_NAME="${STT_MODEL_NAME:-whisper-large-v3-turbo}" \
