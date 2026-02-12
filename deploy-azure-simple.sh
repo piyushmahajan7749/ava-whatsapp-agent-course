@@ -228,8 +228,8 @@ az containerapp create \
     --registry-password "$ACR_PASSWORD" \
     --cpu 2.0 \
     --memory 4Gi \
-    --min-replicas 2 \
-    --max-replicas 5 \
+    --min-replicas 1 \
+    --max-replicas 1 \
     --env-vars \
         GROQ_API_KEY="$GROQ_API_KEY" \
         ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" \

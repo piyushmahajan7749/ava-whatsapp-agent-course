@@ -157,8 +157,8 @@ def _get_db_connection() -> sqlite3.Connection:
     db_path = _get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    # WAL mode allows concurrent reads during writes, preventing "database is locked"
-    conn.execute("PRAGMA journal_mode = WAL")
+    # DELETE mode is safer on network filesystems (Azure Files SMB doesn't support WAL shared memory)
+    conn.execute("PRAGMA journal_mode = DELETE")
     # Retry for up to 5 seconds if another connection holds a lock
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
