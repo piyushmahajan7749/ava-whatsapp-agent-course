@@ -129,7 +129,6 @@ Feel free to type it out or send me a voice note, whatever feels easier for you.
 
 □ Warm & nurturing (gentle, empathetic, holds space for you)
 □ Structured & direct (goal-oriented, keeps you on track)
-□ A blend of both
 □ Queer-affirming (understands LGBTQIA+ experiences)
 □ Trauma-informed (works gently with past wounds)
 □ Culturally aware (gets your background and identity)

@@ -287,6 +287,13 @@ async def interakt_webhook_handler(request: Request) -> Response:
         # Serialize all processing for the same phone number to prevent
         # concurrent state reads/writes from corrupting conversation history.
         async with _get_user_lock(phone_number):
+            # Secret reset code for testers
+            if message_text.strip().lower() == "#reset":
+                deleted = delete_user_state(phone_number)
+                logger.info(f"[INTERAKT_WEBHOOK] Tester reset for {phone_number}: {deleted}")
+                await _send_messages(phone_number, ["Your conversation has been reset. Send any message to start fresh! 🔄"])
+                return Response(content="OK (reset)", status_code=200)
+
             # Check if user is in handoff state - don't respond
             user_state = get_user_state(phone_number)
             if user_state and user_state.stage == OnboardingStage.HUMAN_HANDOFF:
