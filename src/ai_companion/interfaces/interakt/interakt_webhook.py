@@ -353,14 +353,25 @@ async def interakt_webhook_handler(request: Request) -> Response:
                     flow_response.friction_buttons,
                 )
 
-            # Tag user as warm lead on successful flow completion
-            if user_state and user_state.stage == OnboardingStage.CONFIRMED:
-                try:
-                    interakt_client = get_interakt_client()
-                    if interakt_client:
-                        await interakt_client.tag_user(phone_number, ["Warm Lead Close ASAP"])
-                except Exception as e:
-                    logger.error(f"[INTERAKT_WEBHOOK] Failed to tag user: {e}")
+            # Tag user based on flow completion state
+            new_state = flow_response.new_state
+            if new_state:
+                tag = None
+                if new_state.stage in (OnboardingStage.CONFIRMED, OnboardingStage.PREFERENCES_COLLECTED):
+                    tag = "Warm Lead Close ASAP"
+                elif new_state.stage == OnboardingStage.CONSULTATION_CONFIRMED:
+                    tag = "Consultation Booked"
+                elif new_state.stage == OnboardingStage.ARCHIVED and getattr(new_state, "selected_route", None) == "browse_experts":
+                    tag = "Browse Experts"
+
+                if tag:
+                    try:
+                        interakt_client = get_interakt_client()
+                        if interakt_client:
+                            await interakt_client.tag_user(phone_number, [tag])
+                            logger.info(f"[INTERAKT_WEBHOOK] Tagged {phone_number}: {tag}")
+                    except Exception as e:
+                        logger.error(f"[INTERAKT_WEBHOOK] Failed to tag user: {e}")
 
         logger.info(f"[INTERAKT_WEBHOOK] Processed message for {phone_number}")
         return Response(content="OK", status_code=200)

@@ -62,6 +62,10 @@ BOT_ENABLED=$(get_env_var "BOT_ENABLED")
 
 AZURE_WHISPER_DEPLOYMENT=$(get_env_var "AZURE_WHISPER_DEPLOYMENT")
 
+# Consultation booking API
+CONSULTATION_API_URL=$(get_env_var "CONSULTATION_API_URL")
+CONSULTATION_API_KEY=$(get_env_var "CONSULTATION_API_KEY")
+
 TEXT_MODEL_NAME=$(get_env_var "TEXT_MODEL_NAME")
 SMALL_TEXT_MODEL_NAME=$(get_env_var "SMALL_TEXT_MODEL_NAME")
 STT_MODEL_NAME=$(get_env_var "STT_MODEL_NAME")
@@ -126,6 +130,8 @@ az containerapp update \
         ALLOWLIST_NUMBERS="${ALLOWLIST_NUMBERS:-}" \
         AZURE_WHISPER_DEPLOYMENT="${AZURE_WHISPER_DEPLOYMENT:-whisper}" \
         BOT_ENABLED="${BOT_ENABLED:-true}" \
+        CONSULTATION_API_URL="${CONSULTATION_API_URL:-https://api.feelyourbest.co/lumi-consultation}" \
+        CONSULTATION_API_KEY="${CONSULTATION_API_KEY:-}" \
         SHORT_TERM_MEMORY_DB_PATH="/app/data/memory.db" \
         TEXT_MODEL_NAME="${TEXT_MODEL_NAME:-gpt-5-chat}" \
         SMALL_TEXT_MODEL_NAME="${SMALL_TEXT_MODEL_NAME:-gpt-5-mini}" \

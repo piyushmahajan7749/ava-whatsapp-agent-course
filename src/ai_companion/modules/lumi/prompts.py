@@ -213,6 +213,23 @@ Looking forward to supporting your journey! 🌱""",
 
 Still not sure?
 • Talk to our Care team for guidance""",
+
+    # Route selection after welcome
+    OnboardingStage.ROUTE_SELECT: """I can help you in a few different ways. What would you prefer?""",
+
+    # Consultation booking
+    OnboardingStage.CONSULTATION_DATE: """Let's find a time for you to chat with our Care Specialist. Which day works best?""",
+
+    OnboardingStage.CONSULTATION_TIME: """Here are the available slots. Pick a time that works for you.""",
+
+    # Preferences collected (Lumi flow terminal)
+    OnboardingStage.PREFERENCES_COLLECTED: """Thank you so much for sharing all of this with me. I have everything I need!
+
+A Care Specialist from our team will be reaching out to you shortly to help you find the perfect match and get you started.
+
+In the meantime, feel free to browse our experts: https://client.feelyourbest.co/expert-directory
+
+Take care, and talk soon!""",
 }
 
 # Conditional follow-up messages based on therapy history
@@ -265,11 +282,7 @@ FRICTION_CYCLING_OPTIONS = """I can see you're weighing your options carefully, 
 If it would help to talk through what you're looking for with someone from our Care team, I can connect you. They might have insights I don't have access to."""
 
 # Human handoff message
-HUMAN_HANDOFF_MESSAGE = """Of course! You can book a time with our Care Specialist directly.
-
-Pick a slot that works for you: https://calendar.app.google/G3vT4RjcN9P4cH7M7
-
-They'll walk you through everything and answer any questions you have."""
+HUMAN_HANDOFF_MESSAGE = """I'm connecting you with our Care team. A specialist will reach out to you shortly to help with next steps. You're in good hands!"""
 
 # Crisis response
 CRISIS_RESPONSE = """I'm really glad you reached out. What you're feeling sounds incredibly painful, and I want to make sure you get the right support immediately.

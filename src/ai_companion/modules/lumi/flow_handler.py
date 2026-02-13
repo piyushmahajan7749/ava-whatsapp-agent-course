@@ -8,7 +8,7 @@ for the 15-stage onboarding flow using LLM for natural conversations.
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date as date_cls, datetime, timedelta
 from typing import List, Optional
 
 from langchain_openai import AzureChatOpenAI
@@ -44,6 +44,11 @@ from ai_companion.modules.lumi.matching import (
     format_therapist_card,
     format_alternative_card,
 )
+from ai_companion.modules.lumi.consultation import (
+    get_consultation_client,
+    get_upcoming_dates,
+    format_time_label,
+)
 from ai_companion.modules.handoff import should_handoff
 
 logger = logging.getLogger(__name__)
@@ -65,7 +70,11 @@ def _get_lumi_llm():
 
 # Stage guidance for LLM
 STAGE_GUIDANCE = {
-    OnboardingStage.WELCOME: """The user just started. Send a warm welcome as Lumi. Introduce yourself, explain you'll help find the right therapist, and assure them everything is confidential. Ask if they're ready to begin.""",
+    OnboardingStage.WELCOME: """The user just replied to your welcome message. Acknowledge their response warmly in 1-2 sentences, then ask how they're doing today or what's on their mind. Keep it open-ended and casual. Do NOT mention options or next steps yet.""",
+
+    OnboardingStage.WARMUP: """The user shared how they're doing. Acknowledge what they said warmly and ask a gentle follow-up to understand a bit more about what's going on for them. Keep it open-ended and conversational. One question only.""",
+
+    OnboardingStage.WARMUP_2: """The user shared more about what's going on. Acknowledge and validate what they said in 1-2 sentences. Then let them know you can help in a few different ways. Do NOT list the options explicitly, buttons will be shown automatically.""",
 
     OnboardingStage.DEMOGRAPHICS: """Ask about their age and gender identity in a friendly, casual way. Keep it brief - just one or two questions.""",
 
@@ -96,6 +105,20 @@ STAGE_GUIDANCE = {
     OnboardingStage.BOOKING: """Ask them to confirm they understand this isn't a diagnosis and that the team may contact them. Get their confirmation to proceed.""",
 
     OnboardingStage.CONFIRMED: """Celebrate! Confirm the booking, share next steps, and let them know the care team will reach out.""",
+
+    OnboardingStage.BROWSE_EXPERTS: """The user chose to browse experts on their own and you sent them the directory link. Answer any questions they have about experts, pricing, how therapy works, etc. Be helpful and warm. If they want more help, let them know they can always come back.""",
+
+    OnboardingStage.CONSULTATION_INTRO: """The user mentioned when they're available for a consultation call. Acknowledge their preference in 1 sentence, then let them know you'll show them available slots. Keep it brief.""",
+
+    OnboardingStage.ROUTE_SELECT: """The user saw route options. Process their choice: browse experts, talk to specialist, or continue with Lumi.""",
+
+    OnboardingStage.CONSULTATION_DATE: """The user is picking a date for a consultation call. Help them choose.""",
+
+    OnboardingStage.CONSULTATION_TIME_SECTION: """The user is choosing a time of day (Morning, Afternoon, or Evening) for their consultation call.""",
+
+    OnboardingStage.CONSULTATION_TIME: """The user is picking a time slot for their consultation. Help them choose.""",
+
+    OnboardingStage.PREFERENCES_COLLECTED: """All data has been collected. Let the user know a Care Specialist will reach out.""",
 }
 
 
@@ -118,6 +141,8 @@ TERMINAL_STAGES = {
     OnboardingStage.CONFIRMED,
     OnboardingStage.HUMAN_HANDOFF,
     OnboardingStage.ARCHIVED,
+    OnboardingStage.CONSULTATION_CONFIRMED,
+    OnboardingStage.PREFERENCES_COLLECTED,
 }
 
 
@@ -191,22 +216,35 @@ class LumiFlowHandler:
                 new_state=state,
             )
 
-        # Check for handoff keywords
-        handoff_decision = should_handoff(message_text)
-        if handoff_decision.should_handoff:
-            logger.info(f"[LUMI_FLOW] Handoff triggered: {handoff_decision.reason}")
-            state.stage = OnboardingStage.HUMAN_HANDOFF
-            state.handoff_reason = handoff_decision.reason
-            save_user_state(state)
-            return FlowResponse(
-                messages=[
-                    HUMAN_HANDOFF_MESSAGE,
-                    "I'm handing you over to our Care team now. If you need me again, just send a message anytime!",
-                ],
-                is_handoff=True,
-                handoff_reason=handoff_decision.reason,
-                new_state=state,
-            )
+        # Check for handoff keywords — skip at stages where "talk to care team"
+        # or "browse experts" are expected button actions, not genuine handoff requests
+        if state.stage not in (
+            OnboardingStage.ROUTE_SELECT,
+            OnboardingStage.WARMUP,
+            OnboardingStage.WARMUP_2,
+            OnboardingStage.BROWSE_EXPERTS,
+            OnboardingStage.CONSULTATION_INTRO,
+            OnboardingStage.CONSULTATION_DATE,
+            OnboardingStage.CONSULTATION_TIME_SECTION,
+            OnboardingStage.CONSULTATION_TIME,
+            OnboardingStage.MATCH_REVEAL,
+            OnboardingStage.ALTERNATIVE_THERAPISTS,
+        ):
+            handoff_decision = should_handoff(message_text)
+            if handoff_decision.should_handoff:
+                logger.info(f"[LUMI_FLOW] Handoff triggered: {handoff_decision.reason}")
+                state.stage = OnboardingStage.HUMAN_HANDOFF
+                state.handoff_reason = handoff_decision.reason
+                save_user_state(state)
+                return FlowResponse(
+                    messages=[
+                        HUMAN_HANDOFF_MESSAGE,
+                        "I'm handing you over to our Care team now. If you need me again, just send a message anytime!",
+                    ],
+                    is_handoff=True,
+                    handoff_reason=handoff_decision.reason,
+                    new_state=state,
+                )
 
         # Check for friction
         friction_decision = check_for_friction(
@@ -267,10 +305,12 @@ class LumiFlowHandler:
             "timestamp": datetime.now().isoformat()
         })
 
-        # Move to demographics after welcome
-        state.stage = OnboardingStage.DEMOGRAPHICS
+        # Stay at WELCOME stage — let the user respond to "Sound good?" first.
+        # Route selection buttons will be shown after the user replies.
 
-        return FlowResponse(messages=[welcome_text])
+        return FlowResponse(
+            messages=[welcome_text],
+        )
 
     async def _generate_llm_response(self, state: LumiUserState, user_message: str) -> str:
         """Generate a response using the LLM with conversation context."""
@@ -282,9 +322,11 @@ class LumiFlowHandler:
         # Include user context in system prompt
         user_context = self._build_user_context(state)
 
+        stage_name = stage.value if hasattr(stage, 'value') else str(stage)
+
         system_prompt = f"""{LUMI_PERSONA}
 
-Current stage: {stage.value}
+Current stage: {stage_name}
 Stage guidance: {stage_guidance}
 
 User context:
@@ -382,6 +424,20 @@ IMPORTANT RULES:
 
     def _handle_button_action(self, state: LumiUserState, message: str) -> Optional[FlowResponse]:
         """Route CTA button selections. Returns None if not a CTA button."""
+        # Don't intercept during warm-up, route selection, or consultation booking —
+        # let the dedicated stage handlers process these.
+        if state.stage in (
+            OnboardingStage.WARMUP,
+            OnboardingStage.WARMUP_2,
+            OnboardingStage.ROUTE_SELECT,
+            OnboardingStage.BROWSE_EXPERTS,
+            OnboardingStage.CONSULTATION_INTRO,
+            OnboardingStage.CONSULTATION_DATE,
+            OnboardingStage.CONSULTATION_TIME_SECTION,
+            OnboardingStage.CONSULTATION_TIME,
+        ):
+            return None
+
         message_lower = message.lower()
 
         # Continue with Lumi (no-op, fall through to normal flow)
@@ -409,17 +465,15 @@ IMPORTANT RULES:
                 "Take your time browsing! I'm still here if you'd like to continue or have questions.",
             ])
 
-        # Book a call / Talk to team -> Calendar handoff
+        # Book a call / Talk to team -> consultation booking flow
         if message_lower in ("book a call", "talk to care team"):
-            state.stage = OnboardingStage.HUMAN_HANDOFF
-            state.handoff_reason = "user_request"
+            state.selected_route = "consultation"
+            state.stage = OnboardingStage.CONSULTATION_INTRO
             return FlowResponse(
                 messages=[
-                    HUMAN_HANDOFF_MESSAGE,
-                    "I'm handing you over to our Care team now. If you need me again, just send a message anytime!",
+                    "Absolutely! I'd love to connect you with one of our Care Specialists.",
+                    "Could you let me know which days generally work best for you?",
                 ],
-                is_handoff=True,
-                handoff_reason="user_request",
             )
 
         return None
@@ -443,8 +497,86 @@ IMPORTANT RULES:
                     buttons=self._get_stage_buttons(stage),
                     list_options=self._get_stage_list_options(stage),
                 )
+            except Exception as e:
+                logger.warning(f"[LUMI_FLOW] FAQ response failed, continuing with normal flow: {e}")
+
+        # Handle welcome reply — ask how they're doing (warm-up turn 1)
+        if stage == OnboardingStage.WELCOME:
+            try:
+                response_text = await self._generate_llm_response(state, message)
             except Exception:
-                logger.warning("[LUMI_FLOW] FAQ response failed, continuing with normal flow")
+                response_text = "That's great to hear! So tell me, how have you been feeling lately?"
+            state.stage = OnboardingStage.WARMUP
+            return FlowResponse(messages=[response_text])
+
+        # Handle warm-up turn 1 reply — ask a deeper follow-up (warm-up turn 2)
+        if stage == OnboardingStage.WARMUP:
+            try:
+                response_text = await self._generate_llm_response(state, message)
+            except Exception:
+                response_text = "I appreciate you sharing that. Can you tell me a bit more about what's been going on?"
+            state.stage = OnboardingStage.WARMUP_2
+            return FlowResponse(messages=[response_text])
+
+        # Handle warm-up turn 2 reply — acknowledge and show route options
+        if stage == OnboardingStage.WARMUP_2:
+            try:
+                response_text = await self._generate_llm_response(state, message)
+            except Exception:
+                response_text = "Thank you for sharing that with me. Let me show you how I can help."
+            state.stage = OnboardingStage.ROUTE_SELECT
+            return FlowResponse(
+                messages=[response_text],
+                buttons=[
+                    {"id": "browse_experts", "title": "Browse all experts"},
+                    {"id": "talk_specialist", "title": "Talk to Care team"},
+                    {"id": "continue_lumi", "title": "Continue with Lumi"},
+                ],
+            )
+
+        # Handle browse experts — answer questions, then auto-close after 5 messages
+        if stage == OnboardingStage.BROWSE_EXPERTS:
+            state.browse_messages_remaining = max(0, (state.browse_messages_remaining or 5) - 1)
+            try:
+                response_text = await self._generate_llm_response(state, message)
+            except Exception as e:
+                logger.error(f"[LUMI_FLOW] BROWSE_EXPERTS LLM error: {e}")
+                response_text = (
+                    "That's a great question! I'm having a small technical hiccup right now, "
+                    "but our Care team can give you all the details. "
+                    "Would you like me to connect you with them?"
+                )
+            if state.browse_messages_remaining <= 0:
+                state.stage = OnboardingStage.ARCHIVED
+                return FlowResponse(messages=[
+                    response_text,
+                    "It was great chatting with you! If you ever want to come back and get matched with a therapist, just send us a message. Take care!",
+                ])
+            return FlowResponse(messages=[response_text])
+
+        # Handle consultation intro — acknowledge, then show date picker
+        if stage == OnboardingStage.CONSULTATION_INTRO:
+            try:
+                response_text = await self._generate_llm_response(state, message)
+            except Exception:
+                response_text = "Let me check what's available for you."
+            state.stage = OnboardingStage.CONSULTATION_DATE
+            dates = get_upcoming_dates(3)
+            buttons = [{"id": d["date"], "title": d["label"][:20]} for d in dates]
+            return FlowResponse(
+                messages=[response_text],
+                buttons=buttons,
+            )
+
+        # Handle route selection and consultation booking stages
+        if stage == OnboardingStage.ROUTE_SELECT:
+            return await self._handle_route_select(state, message)
+        if stage == OnboardingStage.CONSULTATION_DATE:
+            return await self._handle_consultation_date(state, message)
+        if stage == OnboardingStage.CONSULTATION_TIME_SECTION:
+            return await self._handle_consultation_time_section(state, message)
+        if stage == OnboardingStage.CONSULTATION_TIME:
+            return await self._handle_consultation_time(state, message)
 
         # Handle post-matching stages based on CURRENT stage (not next stage)
         # These stages are not in the linear stage_order and handle their own transitions
@@ -485,9 +617,16 @@ IMPORTANT RULES:
         # Determine next stage
         next_stage = self._get_next_stage(stage, state, message)
 
-        # Handle processing (therapist matching)
+        # Handle processing (therapist matching) - legacy path
         if next_stage == OnboardingStage.PROCESSING:
             return await self._handle_processing(state, message)
+
+        # Handle preferences collected terminal (Lumi flow end)
+        if next_stage == OnboardingStage.PREFERENCES_COLLECTED:
+            state.stage = OnboardingStage.PREFERENCES_COLLECTED
+            return FlowResponse(
+                messages=[STAGE_MESSAGES[OnboardingStage.PREFERENCES_COLLECTED]],
+            )
 
         # Move to next stage and generate response
         state.stage = next_stage
@@ -617,6 +756,7 @@ IMPORTANT RULES:
         """Determine the next stage based on current stage and user input."""
         stage_order = [
             OnboardingStage.WELCOME,
+            OnboardingStage.ROUTE_SELECT,
             OnboardingStage.DEMOGRAPHICS,
             OnboardingStage.STORY,
             OnboardingStage.THERAPY_HISTORY,
@@ -628,7 +768,7 @@ IMPORTANT RULES:
             OnboardingStage.GENDER_PREFERENCE,
             OnboardingStage.PERSONAL_CONTEXT,
             OnboardingStage.PERSONAL_CITY,
-            OnboardingStage.PROCESSING,
+            OnboardingStage.PREFERENCES_COLLECTED,
         ]
 
         # Special case: medication yes needs followup
@@ -642,11 +782,16 @@ IMPORTANT RULES:
         except ValueError:
             pass
 
-        return OnboardingStage.PROCESSING
+        return OnboardingStage.PREFERENCES_COLLECTED
 
     def _get_stage_buttons(self, stage: OnboardingStage) -> Optional[List[dict]]:
         """Get appropriate buttons for a stage (max 3, for WhatsApp reply buttons)."""
         buttons_map = {
+            OnboardingStage.ROUTE_SELECT: [
+                {"id": "browse_experts", "title": "Browse all experts"},
+                {"id": "talk_specialist", "title": "Talk to Care team"},
+                {"id": "continue_lumi", "title": "Continue with Lumi"},
+            ],
             OnboardingStage.DEMOGRAPHICS: None,  # Free text
             OnboardingStage.STORY: None,  # Free text
             OnboardingStage.THERAPY_HISTORY: [
@@ -726,6 +871,322 @@ IMPORTANT RULES:
         }
         return list_map.get(stage)
 
+    async def _handle_route_select(self, state: LumiUserState, message: str) -> FlowResponse:
+        """Handle the route selection after welcome."""
+        message_lower = message.lower()
+
+        # Option 1: Browse experts
+        if any(kw in message_lower for kw in ["browse", "experts", "directory"]):
+            state.selected_route = "browse_experts"
+            state.stage = OnboardingStage.BROWSE_EXPERTS
+            state.browse_messages_remaining = 5
+            return FlowResponse(
+                messages=[
+                    EXPERT_DIRECTORY_CTA,
+                    "Take your time exploring! I'm still here if you have any questions about our experts, pricing, or how therapy works.",
+                ],
+            )
+
+        # Option 2: Talk to Care Specialist
+        if any(kw in message_lower for kw in ["talk", "specialist", "care team", "call"]):
+            state.selected_route = "consultation"
+            state.stage = OnboardingStage.CONSULTATION_INTRO
+            return FlowResponse(
+                messages=[
+                    "Absolutely! I'd love to connect you with one of our Care Specialists. They're great at helping you figure out the right path forward.",
+                    "Before I check available slots, could you let me know which days generally work best for you?",
+                ],
+            )
+
+        # Option 3: Continue with Lumi (default)
+        state.selected_route = "lumi_flow"
+        state.stage = OnboardingStage.DEMOGRAPHICS
+
+        try:
+            response_text = await self._generate_llm_response(state, message)
+            return FlowResponse(messages=[response_text])
+        except Exception:
+            return FlowResponse(
+                messages=[STAGE_MESSAGES[OnboardingStage.DEMOGRAPHICS]]
+            )
+
+    async def _handle_consultation_date(self, state: LumiUserState, message: str) -> FlowResponse:
+        """Handle date selection for consultation booking."""
+        message_stripped = message.strip()
+        selected_date = None
+
+        # Try to parse date from button ID (YYYY-MM-DD)
+        try:
+            selected_date = date_cls.fromisoformat(message_stripped)
+        except ValueError:
+            pass
+
+        # Try natural text like "Today", "Tomorrow"
+        if not selected_date:
+            message_lower = message_stripped.lower()
+            if "today" in message_lower:
+                selected_date = date_cls.today()
+            elif "tomorrow" in message_lower:
+                selected_date = date_cls.today() + timedelta(days=1)
+            else:
+                # Try to match label text from buttons
+                dates = get_upcoming_dates(3)
+                for d in dates:
+                    if d["label"].lower() in message_lower or message_lower in d["label"].lower():
+                        selected_date = date_cls.fromisoformat(d["date"])
+                        break
+
+        if not selected_date:
+            dates = get_upcoming_dates(3)
+            buttons = [{"id": d["date"], "title": d["label"][:20]} for d in dates]
+            return FlowResponse(
+                messages=["I didn't catch that. Could you pick one of these dates?"],
+                buttons=buttons,
+            )
+
+        # Store selected date
+        state.consultation_date = selected_date.isoformat()
+
+        # Fetch available slots
+        consultation_client = get_consultation_client()
+        if not consultation_client:
+            # API not configured - fallback to human handoff
+            state.stage = OnboardingStage.HUMAN_HANDOFF
+            state.handoff_reason = "consultation_api_unavailable"
+            return FlowResponse(
+                messages=[
+                    HUMAN_HANDOFF_MESSAGE,
+                    "I'm handing you over to our Care team now. If you need me again, just send a message anytime!",
+                ],
+                is_handoff=True,
+                handoff_reason="consultation_api_unavailable",
+            )
+
+        booked_events = await consultation_client.get_booked_slots(state.consultation_date)
+        available_slots = consultation_client.calculate_available_slots(booked_events, selected_date)
+
+        if not available_slots:
+            dates = get_upcoming_dates(3)
+            buttons = [{"id": d["date"], "title": d["label"][:20]} for d in dates]
+            date_label = selected_date.strftime("%A, %d %b")
+            return FlowResponse(
+                messages=[f"Unfortunately, there are no slots available on {date_label}. Could you try another date?"],
+                buttons=buttons,
+            )
+
+        # Move to time section selection (Morning / Afternoon / Evening)
+        state.stage = OnboardingStage.CONSULTATION_TIME_SECTION
+        state.available_slots = available_slots  # Store for next step
+
+        morning = [s for s in available_slots if int(s[:2]) < 12]
+        afternoon = [s for s in available_slots if 12 <= int(s[:2]) < 17]
+        evening = [s for s in available_slots if int(s[:2]) >= 17]
+
+        section_buttons = []
+        if morning:
+            section_buttons.append({"id": "section_morning", "title": "Morning"})
+        if afternoon:
+            section_buttons.append({"id": "section_afternoon", "title": "Afternoon"})
+        if evening:
+            section_buttons.append({"id": "section_evening", "title": "Evening"})
+
+        date_label = selected_date.strftime("%A, %d %b")
+        return FlowResponse(
+            messages=[f"Great! What time of day works best for you on {date_label}?"],
+            buttons=section_buttons,
+        )
+
+    async def _handle_consultation_time_section(self, state: LumiUserState, message: str) -> FlowResponse:
+        """Handle day-section selection (Morning/Afternoon/Evening), then show up to 3 time slots."""
+        msg_lower = message.strip().lower()
+        available = state.available_slots or []
+
+        slots = None
+        if "morning" in msg_lower:
+            slots = [s for s in available if int(s[:2]) < 12]
+        elif "afternoon" in msg_lower:
+            slots = [s for s in available if 12 <= int(s[:2]) < 17]
+        elif "evening" in msg_lower:
+            slots = [s for s in available if int(s[:2]) >= 17]
+
+        if slots is None:
+            # Didn't understand — re-show section buttons
+            morning = [s for s in available if int(s[:2]) < 12]
+            afternoon = [s for s in available if 12 <= int(s[:2]) < 17]
+            evening = [s for s in available if int(s[:2]) >= 17]
+            section_buttons = []
+            if morning:
+                section_buttons.append({"id": "section_morning", "title": "Morning"})
+            if afternoon:
+                section_buttons.append({"id": "section_afternoon", "title": "Afternoon"})
+            if evening:
+                section_buttons.append({"id": "section_evening", "title": "Evening"})
+            return FlowResponse(
+                messages=["Could you pick a time of day? Morning, Afternoon, or Evening?"],
+                buttons=section_buttons,
+            )
+
+        if not slots:
+            # Section exists but no slots available — re-show section buttons
+            morning = [s for s in available if int(s[:2]) < 12]
+            afternoon = [s for s in available if 12 <= int(s[:2]) < 17]
+            evening = [s for s in available if int(s[:2]) >= 17]
+            section_buttons = []
+            if morning:
+                section_buttons.append({"id": "section_morning", "title": "Morning"})
+            if afternoon:
+                section_buttons.append({"id": "section_afternoon", "title": "Afternoon"})
+            if evening:
+                section_buttons.append({"id": "section_evening", "title": "Evening"})
+            return FlowResponse(
+                messages=["No slots available in that window. Could you try another time of day?"],
+                buttons=section_buttons,
+            )
+
+        # Show up to 3 slots as buttons
+        state.stage = OnboardingStage.CONSULTATION_TIME
+        display_slots = slots[:3]
+        buttons = [{"id": s, "title": format_time_label(s)} for s in display_slots]
+
+        return FlowResponse(
+            messages=["Here are some times. Pick one that works for you!"],
+            buttons=buttons,
+        )
+
+    async def _handle_consultation_time(self, state: LumiUserState, message: str) -> FlowResponse:
+        """Handle time slot selection and book the consultation."""
+        message_stripped = message.strip()
+        selected_time = None
+
+        # Try HH:MM format (from list reply ID)
+        time_match = re.match(r"^(\d{1,2}):(\d{2})$", message_stripped)
+        if time_match:
+            selected_time = f"{int(time_match.group(1)):02d}:{time_match.group(2)}"
+
+        # Try "9:00 AM" style from list reply title
+        if not selected_time:
+            am_pm_match = re.match(r"^(\d{1,2}):(\d{2})\s*(AM|PM)$", message_stripped, re.IGNORECASE)
+            if am_pm_match:
+                hour = int(am_pm_match.group(1))
+                minute = am_pm_match.group(2)
+                period = am_pm_match.group(3).upper()
+                if period == "PM" and hour != 12:
+                    hour += 12
+                elif period == "AM" and hour == 12:
+                    hour = 0
+                selected_time = f"{hour:02d}:{minute}"
+
+        # Try natural formats: "12pm", "2pm", "2:30pm", "230pm"
+        if not selected_time:
+            natural_match = re.match(
+                r"^(\d{1,2})(?::?(\d{2}))?\s*(am|pm)$",
+                message_stripped,
+                re.IGNORECASE,
+            )
+            if natural_match:
+                hour = int(natural_match.group(1))
+                minute = natural_match.group(2) or "00"
+                period = natural_match.group(3).upper()
+                if period == "PM" and hour != 12:
+                    hour += 12
+                elif period == "AM" and hour == 12:
+                    hour = 0
+                selected_time = f"{hour:02d}:{minute}"
+
+        # If user sent a date label while we expected a time, go back to date selection
+        if not selected_time:
+            msg_lower = message_stripped.lower()
+            date_keywords = ["today", "tomorrow", "mon", "tue", "wed", "thu", "fri", "sat"]
+            if any(kw in msg_lower for kw in date_keywords):
+                state.stage = OnboardingStage.CONSULTATION_DATE
+                dates = get_upcoming_dates(3)
+                buttons = [{"id": d["date"], "title": d["label"][:20]} for d in dates]
+                return FlowResponse(
+                    messages=["Looks like you picked a date. Let's choose a date first, then we'll pick a time."],
+                    buttons=buttons,
+                )
+
+        # On genuine parse failure, re-show time slot buttons
+        if not selected_time:
+            available = state.available_slots or []
+            if available:
+                display = available[:3]
+                buttons = [{"id": s, "title": format_time_label(s)} for s in display]
+                return FlowResponse(
+                    messages=["I didn't quite catch that. Could you pick one of these times?"],
+                    buttons=buttons,
+                )
+            return FlowResponse(
+                messages=["I didn't catch that. Could you type a time like '10:00 AM' or '2pm'?"],
+            )
+
+        # Store selected time and attempt booking
+        state.consultation_time = selected_time
+
+        consultation_client = get_consultation_client()
+        if not consultation_client:
+            state.stage = OnboardingStage.HUMAN_HANDOFF
+            state.handoff_reason = "consultation_api_unavailable"
+            return FlowResponse(
+                messages=[
+                    HUMAN_HANDOFF_MESSAGE,
+                    "I'm handing you over to our Care team now. If you need me again, just send a message anytime!",
+                ],
+                is_handoff=True,
+                handoff_reason="consultation_api_unavailable",
+            )
+
+        # Format phone for E.164
+        phone = f"+{state.phone_number}" if not state.phone_number.startswith("+") else state.phone_number
+
+        try:
+            result = await consultation_client.book_slot(
+                phone=phone,
+                name=state.phone_number,  # Name not collected yet at this point
+                meeting_date=state.consultation_date,
+                meeting_time=state.consultation_time,
+            )
+
+            if result["status_code"] in (200, 201):
+                state.stage = OnboardingStage.CONSULTATION_CONFIRMED
+
+                booked_date = date_cls.fromisoformat(state.consultation_date)
+                date_label = booked_date.strftime("%A, %d %B")
+                time_label = format_time_label(state.consultation_time)
+
+                confirmation_msg = (
+                    f"Your consultation is booked!\n\n"
+                    f"Date: {date_label}\n"
+                    f"Time: {time_label}\n\n"
+                    f"Our Care Specialist will call you at this number. "
+                    f"If you need to reschedule, just send us a message.\n\n"
+                    f"Looking forward to connecting you with the right support!"
+                )
+                return FlowResponse(messages=[confirmation_msg])
+            elif result["status_code"] == 409:
+                # Slot already booked - ask for another time
+                return FlowResponse(
+                    messages=["That slot just got booked by someone else! Could you pick another time?"],
+                )
+            else:
+                logger.error(f"[CONSULTATION] Booking failed: {result}")
+                return FlowResponse(
+                    messages=["I'm having a little trouble booking that slot. Could you try another time?"],
+                )
+
+        except Exception as e:
+            logger.error(f"[CONSULTATION] Booking exception: {e}")
+            state.stage = OnboardingStage.HUMAN_HANDOFF
+            state.handoff_reason = "consultation_booking_error"
+            return FlowResponse(
+                messages=[
+                    "I ran into an issue booking your consultation. Let me connect you with our Care team directly.",
+                    HUMAN_HANDOFF_MESSAGE,
+                ],
+                is_handoff=True,
+                handoff_reason="consultation_booking_error",
+            )
+
     async def _handle_processing(self, state: LumiUserState, message: str) -> FlowResponse:
         """Handle the processing/matching stage."""
         state.stage = OnboardingStage.PROCESSING
@@ -789,15 +1250,13 @@ IMPORTANT RULES:
         message_lower = message.lower()
 
         if "care team" in message_lower or "talk to" in message_lower:
-            state.stage = OnboardingStage.HUMAN_HANDOFF
-            state.handoff_reason = "user_request"
+            state.selected_route = "consultation"
+            state.stage = OnboardingStage.CONSULTATION_INTRO
             return FlowResponse(
                 messages=[
-                    HUMAN_HANDOFF_MESSAGE,
-                    "I'm handing you over to our Care team now. If you need me again, just send a message anytime!",
+                    "Absolutely! I'd love to connect you with one of our Care Specialists.",
+                    "Could you let me know which days generally work best for you?",
                 ],
-                is_handoff=True,
-                handoff_reason="user_request",
             )
 
         if "browse" in message_lower or "directory" in message_lower or "all experts" in message_lower:

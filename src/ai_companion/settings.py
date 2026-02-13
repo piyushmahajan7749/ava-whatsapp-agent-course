@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     LUMI_ENABLED: bool = True
     EXISTING_CLIENTS_DB_URL: str | None = None  # For client lookup (optional)
 
+    # Consultation booking API
+    CONSULTATION_API_URL: str = "https://api.feelyourbest.co/lumi-consultation"
+    CONSULTATION_API_KEY: str | None = None
+
     # Re-engagement timing (in hours)
     NUDGE_DELAY_1_HOURS: int = 2
     NUDGE_DELAY_2_HOURS: int = 24

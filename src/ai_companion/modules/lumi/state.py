@@ -47,6 +47,26 @@ class OnboardingStage(str, Enum):
     PERSONAL_CITY = "personal_city"
     ALTERNATIVE_THERAPISTS = "alternative_therapists"
 
+    # Warm-up conversation before route selection
+    WARMUP = "warmup"
+    WARMUP_2 = "warmup_2"
+
+    # Route selection after welcome
+    ROUTE_SELECT = "route_select"
+
+    # Browse experts (stays open for questions)
+    BROWSE_EXPERTS = "browse_experts"
+
+    # Consultation booking flow
+    CONSULTATION_INTRO = "consultation_intro"
+    CONSULTATION_DATE = "consultation_date"
+    CONSULTATION_TIME_SECTION = "consultation_time_section"  # Morning/Afternoon/Evening picker
+    CONSULTATION_TIME = "consultation_time"
+    CONSULTATION_CONFIRMED = "consultation_confirmed"
+
+    # Preferences collected terminal (Lumi flow without matching)
+    PREFERENCES_COLLECTED = "preferences_collected"
+
 
 class LumiUserState(BaseModel):
     """User state for Lumi onboarding flow."""
@@ -115,6 +135,15 @@ class LumiUserState(BaseModel):
 
     # Handoff context
     handoff_reason: Optional[str] = None
+
+    # Route selection
+    selected_route: Optional[str] = None  # "browse_experts", "consultation", "lumi_flow"
+    browse_messages_remaining: int = 5
+
+    # Consultation booking
+    consultation_date: Optional[str] = None  # YYYY-MM-DD
+    consultation_time: Optional[str] = None  # HH:MM
+    available_slots: List[str] = Field(default_factory=list)  # Temp storage during booking
 
     # Conversation history for LLM context
     conversation_history: List[dict] = Field(default_factory=list)
