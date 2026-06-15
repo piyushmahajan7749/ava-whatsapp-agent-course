@@ -5,7 +5,6 @@ from langchain_openai import AzureChatOpenAI
 
 
 from ai_companion.modules.image.image_to_text import ImageToText
-from ai_companion.modules.image.text_to_image import TextToImage
 from ai_companion.modules.speech import TextToSpeech
 from ai_companion.settings import settings
 
@@ -91,10 +90,6 @@ def chunk_response_into_messages(response_text: str) -> list:
         messages = [response_text.strip()]
     
     return messages
-
-
-def get_text_to_image_module():
-    return TextToImage()
 
 
 def get_image_to_text_module():

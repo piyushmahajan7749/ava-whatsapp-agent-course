@@ -15,7 +15,6 @@ from ai_companion.graph import graph_builder
 from ai_companion.graph.utils.helpers import chunk_message_by_sentences
 from ai_companion.modules.image import ImageToText
 from ai_companion.modules.speech import SpeechToText, TextToSpeech
-from ai_companion.modules.chatwoot import get_chatwoot_client
 from ai_companion.settings import settings
 
 # Configure logging with detailed format
@@ -53,9 +52,6 @@ def get_image_to_text():
     if _image_to_text is None:
         _image_to_text = ImageToText()
     return _image_to_text
-
-# Chatwoot client (optional - only if configured)
-chatwoot_client = get_chatwoot_client()
 
 # Router for WhatsApp respo
 whatsapp_router = APIRouter()
@@ -169,20 +165,6 @@ async def whatsapp_handler(request: Request) -> Response:
             else:
                 content = message["text"]["body"]
 
-            # Forward message to Chatwoot (if configured)
-            chatwoot_conversation_id = None
-            if chatwoot_client:
-                try:
-                    logger.info(f"Forwarding message to Chatwoot from {from_number}")
-                    contact_id, chatwoot_conversation_id = await chatwoot_client.forward_incoming_message(
-                        phone_number=from_number,
-                        message_text=content,
-                    )
-                    logger.info(f"Message forwarded to Chatwoot conversation: {chatwoot_conversation_id}")
-                except Exception as chatwoot_error:
-                    logger.error(f"Failed to forward to Chatwoot (non-fatal): {chatwoot_error}")
-                    # Continue processing even if Chatwoot fails
-
             # Process message through the graph agent
             try:
                 async with AsyncSqliteSaver.from_conn_string(settings.SHORT_TERM_MEMORY_DB_PATH) as short_term_memory:
@@ -246,18 +228,6 @@ async def whatsapp_handler(request: Request) -> Response:
             logger.info("Graph output: workflow=%s, ai_messages_count=%d", 
                        workflow, len(recent_ai_messages))
 
-            # Check if AI should respond (Chatwoot handoff detection)
-            should_ai_reply = True
-            if chatwoot_client and chatwoot_conversation_id:
-                try:
-                    should_ai_reply = await chatwoot_client.should_ai_respond(chatwoot_conversation_id)
-                    if not should_ai_reply:
-                        logger.info(f"Human has taken over conversation {chatwoot_conversation_id} - skipping AI reply")
-                        return Response(content="Message processed (human handling)", status_code=200)
-                except Exception as handoff_error:
-                    logger.error(f"Error checking handoff status (continuing with AI): {handoff_error}")
-                    should_ai_reply = True
-
             # Handle different response types based on workflow
             if workflow == "audio":
                 audio_buffer = output_state.values["audio_buffer"]
@@ -292,17 +262,6 @@ async def whatsapp_handler(request: Request) -> Response:
                     await asyncio.to_thread(saarthi.record_outbound, from_number, response_message)
             except Exception as crm_error:
                 logger.error(f"Failed to record outbound in Saarthi CRM (non-fatal): {crm_error}")
-
-            # Forward AI reply to Chatwoot (if configured and message sent successfully)
-            if chatwoot_client and chatwoot_conversation_id and success:
-                try:
-                    await chatwoot_client.forward_ai_reply(
-                        conversation_id=chatwoot_conversation_id,
-                        reply_text=response_message,
-                    )
-                    logger.info(f"AI reply forwarded to Chatwoot conversation: {chatwoot_conversation_id}")
-                except Exception as chatwoot_error:
-                    logger.error(f"Failed to forward AI reply to Chatwoot (non-fatal): {chatwoot_error}")
 
             return Response(content="Message processed", status_code=200)
 

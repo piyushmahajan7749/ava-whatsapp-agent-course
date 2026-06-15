@@ -1,64 +1,7 @@
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from pydantic import BaseModel, Field
-from typing import Optional
-
-from ai_companion.core.prompts import CHARACTER_CARD_PROMPT, INTENT_ROUTER_PROMPT
+from ai_companion.core.prompts import CHARACTER_CARD_PROMPT
 from ai_companion.core.knowledge import BUSINESS_KNOWLEDGE
 from ai_companion.graph.utils.helpers import AsteriskRemovalParser, get_chat_model
 from ai_companion.modules.saarthi.tools import get_saarthi_tools
-
-
-class RouterResponse(BaseModel):
-    """Enhanced router response with intent detection and conversation stage tracking."""
-    
-    # Media type routing (preserved from original)
-    response_type: str = Field(
-        description="The media response type. Must be one of: 'conversation', 'image', or 'audio'"
-    )
-    
-    # Intent routing (new)
-    primary_intent: str = Field(
-        description="The primary intent of the user. Must be one of: 'booking', 'consultation_inquiry', 'products_pooja', 'general', 'escalation_needed'"
-    )
-    
-    secondary_intent: Optional[str] = Field(
-        default=None,
-        description="Optional secondary intent if message contains multiple intents. Can be: 'booking', 'consultation_inquiry', 'products_pooja', 'general', 'escalation_needed', or None"
-    )
-    
-    confidence: float = Field(
-        description="Confidence score for the primary intent classification. Range: 0.0 to 1.0",
-        ge=0.0,
-        le=1.0
-    )
-    
-    conversation_stage: str = Field(
-        description="Current stage in customer journey. Must be one of: 'inquiry', 'interested', 'payment_pending', 'payment_verified', 'booking_ready', 'confirmed', 'general_chat', 'escalation_requested'"
-    )
-    
-    reasoning: str = Field(
-        description="Brief explanation of the routing decision (1-2 sentences)"
-    )
-
-
-def get_router_chain():
-    """
-    Get the enhanced intent-based router chain.
-    
-    Returns a chain that analyzes conversation context and returns:
-    - Media type (conversation/audio/image)
-    - Primary intent (booking/consultation_inquiry/products_pooja/general)
-    - Secondary intent (if hybrid intent detected)
-    - Confidence score
-    - Conversation stage
-    """
-    model = get_chat_model(temperature=0.3).with_structured_output(RouterResponse)
-
-    prompt = ChatPromptTemplate.from_messages(
-        [("system", INTENT_ROUTER_PROMPT), MessagesPlaceholder(variable_name="messages")]
-    )
-
-    return prompt | model
 
 
 def get_character_response_chain(
