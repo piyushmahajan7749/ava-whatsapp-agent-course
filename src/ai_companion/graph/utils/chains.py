@@ -5,7 +5,7 @@ from typing import Optional
 from ai_companion.core.prompts import CHARACTER_CARD_PROMPT, INTENT_ROUTER_PROMPT
 from ai_companion.core.knowledge import BUSINESS_KNOWLEDGE
 from ai_companion.graph.utils.helpers import AsteriskRemovalParser, get_chat_model
-from ai_companion.modules.calendar.google_calendar_tools import get_calendar_tools
+from ai_companion.modules.saarthi.tools import get_saarthi_tools
 
 
 class RouterResponse(BaseModel):
@@ -84,11 +84,13 @@ def get_character_response_chain(
     from datetime import datetime
     import pytz
     
-    model = get_chat_model(temperature=0.7, max_tokens=120)  # Optimized for short, focused messages
-    
+    # 450 tokens: property-match messages carry 2-3 listings WITH links; plain
+    # chat replies stay short via prompt instructions.
+    model = get_chat_model(temperature=0.7, max_tokens=450)
+
     # Bind tools if enabled
     if enable_tools:
-        tools = get_calendar_tools()
+        tools = get_saarthi_tools()
         model = model.bind_tools(tools)
     
     def format_system_message(inputs):
@@ -122,9 +124,9 @@ def get_character_response_chain(
         
         if inputs.get("memory_context"):
             system_message += f"\n\nRelevant Memories: {inputs['memory_context']}"
-        
-        if inputs.get("product_context"):
-            system_message += f"\n\nProduct Context: {inputs['product_context']}"
+
+        if inputs.get("lead_context"):
+            system_message += f"\n\nLead CRM context (current state of THIS buyer — never re-ask what's here):\n{inputs['lead_context']}"
 
         # Force response language when requested by the caller (e.g., WhatsApp Hindi users).
         # This is more robust than relying on post-translation alone.
@@ -142,25 +144,13 @@ def get_character_response_chain(
         
         if enable_tools:
             system_message += (
-                "\n\nYou have access to calendar and business tools. Use the appropriate tools when needed:\n"
-                "\n**CALENDAR TOOLS:**\n"
-                "- check_calendar_availability: Check if a time slot is free\n"
-                "- book_calendar_event: Book an event in the calendar\n"
-                "- get_available_consultation_slots: Get all available slots for a specific date\n"
-                "\n**BUSINESS TOOLS:**\n"
-                "- log_product_order_to_sheets: Log product/puja orders to business spreadsheet\n"
-                "\n**CRITICAL TIMEZONE INSTRUCTIONS:**\n"
-                "- All times mentioned by users are in IST (Indian Standard Time, UTC+5:30)\n"
-                "- When calling calendar tools, provide times in ISO format WITH IST offset\n"
-                "- Example: For 10:00 AM IST on Oct 4, 2025, use: 2025-10-04T10:00:00+05:30\n"
-                "- Example: For 3:30 PM IST on Oct 5, 2025, use: 2025-10-05T15:30:00+05:30\n"
-                "- Always include the +05:30 offset in the ISO datetime string\n"
-                "\n**PRODUCT ORDER LOGGING:**\n"
-                "- When a customer completes a product order or puja booking, ALWAYS call log_product_order_to_sheets\n"
-                "- This creates a business record for order fulfillment\n"
-                "- Required fields: product_type, product_name, customer_name, payment_amount, shipping_address\n"
-                "- Optional fields: gotra, contact_info, payment_details, puja_date, notes\n"
-                "Always confirm details with the user before booking events or logging orders."
+                "\n\nYou have CRM and property tools — use them per the journey instructions:\n"
+                "- update_lead_requirements: save newly-learned buyer info (call silently, never narrate)\n"
+                "- search_properties: find live matching listings with website links\n"
+                "- schedule_property_visit: tentative site visit AFTER the buyer picked properties and gave availability\n"
+                "- mark_lead_warm: flag a serious buyer / human-handoff request so a team member calls\n"
+                "\n**TIMEZONE:** all user times are IST (UTC+5:30). When passing preferred_datetime_iso, "
+                "use ISO format with offset, e.g. 2026-06-13T17:00:00+05:30, and it must be TOMORROW or later — never today."
             )
         
         # Return formatted messages

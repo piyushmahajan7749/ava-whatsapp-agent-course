@@ -140,6 +140,13 @@ async def whatsapp_handler(request: Request) -> Response:
             from_number = message["from"]
             session_id = from_number
 
+            # WhatsApp profile name — passed to the graph so the CRM lead gets a name.
+            wa_profile_name = None
+            try:
+                wa_profile_name = change_value.get("contacts", [{}])[0].get("profile", {}).get("name")
+            except (IndexError, AttributeError):
+                pass
+
             # Get user message and handle different message types
             content = ""
             logger.info("Incoming message: type=%s from=%s", message.get("type"), from_number)
@@ -183,7 +190,17 @@ async def whatsapp_handler(request: Request) -> Response:
                     graph = graph_builder.compile(checkpointer=short_term_memory)
                     logger.debug("Graph invoke: thread_id=%s", session_id)
                     await graph.ainvoke(
-                        {"messages": [HumanMessage(content=content, additional_kwargs={"wa_type": message.get("type")})]},
+                        {
+                            "messages": [
+                                HumanMessage(
+                                    content=content,
+                                    additional_kwargs={
+                                        "wa_type": message.get("type"),
+                                        "wa_profile_name": wa_profile_name,
+                                    },
+                                )
+                            ]
+                        },
                         {"configurable": {"thread_id": session_id}},
                     )
 
@@ -265,6 +282,16 @@ async def whatsapp_handler(request: Request) -> Response:
 
             if not success:
                 return Response(content="Failed to send message", status_code=500)
+
+            # Mirror the bot reply into the Saarthi CRM transcript (non-fatal).
+            try:
+                from ai_companion.modules.saarthi.client import get_saarthi_client
+
+                saarthi = get_saarthi_client()
+                if saarthi.configured and response_message:
+                    await asyncio.to_thread(saarthi.record_outbound, from_number, response_message)
+            except Exception as crm_error:
+                logger.error(f"Failed to record outbound in Saarthi CRM (non-fatal): {crm_error}")
 
             # Forward AI reply to Chatwoot (if configured and message sent successfully)
             if chatwoot_client and chatwoot_conversation_id and success:

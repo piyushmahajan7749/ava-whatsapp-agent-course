@@ -10,23 +10,27 @@ from ai_companion.modules.speech import TextToSpeech
 from ai_companion.settings import settings
 
 
-def get_chat_model(temperature: float = 1, max_tokens: int = 120):
+def get_chat_model(temperature: float = 1, max_tokens: int = 450):
     """
     Get chat model with parameters optimized for short, focused messages.
-    
+
     Args:
-        temperature: Controls randomness (0.0 = deterministic, 1.0 = creative)
-        max_tokens: Maximum tokens per response (120 = ~1-2 sentences)
+        temperature: Accepted for call-site compatibility but NOT forwarded —
+            the gpt-5 deployment only supports the default temperature (1).
+        max_tokens: Output cap. gpt-5 deployments reject `max_tokens`, so we send
+            it as `max_completion_tokens` via model_kwargs.
     """
+    _ = temperature  # gpt-5-chat: only temperature=1 is supported (langchain
+    # otherwise sends its 0.7 default, which the model rejects)
     return AzureChatOpenAI(
         azure_deployment=settings.TEXT_MODEL_NAME,
         api_version=settings.AZURE_OPENAI_API_VERSION,
-        max_tokens=max_tokens,  # Enforce short responses (1-2 sentences)
-        temperature=temperature,  # Lower temperature for more consistent responses
+        temperature=1,
         timeout=60.0,  # 60 second timeout to prevent hanging
         max_retries=3,  # Increased retries for flaky connections
         api_key=settings.AZURE_OPENAI_API_KEY,
         azure_endpoint=settings.AZURE_OPENAI_API_ENDPOINT,
+        model_kwargs={"max_completion_tokens": max_tokens},  # gpt-5 family
     )
 
 
@@ -165,14 +169,18 @@ class AsteriskRemovalParser(StrOutputParser):
 
 
 def get_small_chat_model(temperature: float = 0):
-    """Return the small Azure OpenAI chat model (gpt-5-mini)."""
+    """Return the small Azure OpenAI chat model (gpt-5-mini).
+
+    temperature is accepted for compatibility but not forwarded (gpt-5 only
+    supports the default).
+    """
+    _ = temperature
     return AzureChatOpenAI(
         azure_deployment=settings.SMALL_TEXT_MODEL_NAME,
         api_version=settings.AZURE_OPENAI_API_VERSION,
-        max_tokens=None,
+        temperature=1,
         timeout=60.0,  # 60 second timeout to prevent hanging
         max_retries=3,  # Increased retries for flaky connections
         api_key=settings.AZURE_OPENAI_API_KEY,
         azure_endpoint=settings.AZURE_OPENAI_API_ENDPOINT,
-        temperature=temperature,
     )

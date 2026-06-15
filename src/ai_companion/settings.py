@@ -52,5 +52,10 @@ class Settings(BaseSettings):
     CHATWOOT_INBOX_ID: str | None = None
     CHATWOOT_ACCOUNT_ID: int = 1
 
+    # Saarthi website Agent API (the CRM source of truth for this branch).
+    # SAARTHI_API_KEY must equal the website's AGENT_API_KEY env var.
+    SAARTHI_API_URL: str = "http://localhost:3000"
+    SAARTHI_API_KEY: str | None = None
+
 
 settings = Settings()

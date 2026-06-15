@@ -24,14 +24,13 @@ except Exception as e:
     logger.exception("Full traceback:")
     conversations_router = None
 
-app = FastAPI(title="Upaai AI Companion API", version="1.0.0")
+app = FastAPI(title="Saarthi WhatsApp Agent API", version="1.0.0")
 
 # CORS middleware for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://upaai.in",
-        "https://www.upaai.in",
+        "https://saarthi-website-ten.vercel.app",
         "http://localhost:3000",  # For local development
     ],
     allow_credentials=True,
