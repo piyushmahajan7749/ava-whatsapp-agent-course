@@ -1,0 +1,17 @@
+.venv
+.git
+__pycache__
+*.pyc
+*.pyo
+.DS_Store
+.env
+.chainlit
+long_term_memory
+short_term_memory
+notebooks
+examples
+docs
+scripts
+*.sh
+*.bak
+img
