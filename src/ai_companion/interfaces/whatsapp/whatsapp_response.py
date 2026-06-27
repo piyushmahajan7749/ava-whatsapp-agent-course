@@ -15,7 +15,13 @@ from ai_companion.graph import graph_builder
 from ai_companion.graph.utils.helpers import chunk_message_by_sentences
 from ai_companion.modules.image import ImageToText
 from ai_companion.modules.speech import SpeechToText, TextToSpeech
-from ai_companion.modules.saarthi.broker_intake import is_broker, handle_broker_text, handle_broker_image
+from ai_companion.modules.saarthi.broker_intake import (
+    is_broker,
+    classify_broker_message,
+    handle_broker_text,
+    handle_broker_image,
+    handle_broker_lead,
+)
 from ai_companion.settings import settings
 
 # Configure logging with detailed format
@@ -147,24 +153,43 @@ async def whatsapp_handler(request: Request) -> Response:
             msg_type = message.get("type", "text")
             logger.info("Incoming message: type=%s from=%s", msg_type, from_number)
 
-            # ---- Broker group intake: bypass the lead-qualification graph ----
+            # ---- Broker intake: bypass the lead-qualification graph ----
             if is_broker(from_number):
                 logger.info("[broker] message from known broker %s", from_number)
                 reply = ""
+
                 if msg_type == "image":
+                    # Images are always listing photos; caption may also carry listing text
+                    caption = message["image"].get("caption", "").strip()
+                    if caption:
+                        # Save as listing first so the photo has something to attach to
+                        await asyncio.to_thread(handle_broker_text, from_number, caption, wa_profile_name)
                     media_id = message["image"]["id"]
                     mime_type = message["image"].get("mime_type", "image/jpeg")
                     reply = await asyncio.to_thread(handle_broker_image, from_number, media_id, mime_type)
-                    # If there's also a caption, treat it as a new text listing first
-                    caption = message["image"].get("caption", "").strip()
-                    if caption:
-                        text_reply = await asyncio.to_thread(handle_broker_text, from_number, caption, wa_profile_name)
-                        reply = text_reply  # photo will auto-attach on next call since listing_id is now set
+                    if not reply and caption:
+                        reply = "✅ Listing saved! Send more photos to add them 📸"
+
+                elif msg_type == "audio":
+                    # Transcribe first, then classify
+                    audio_bytes = await download_media(message["audio"]["id"])
+                    transcribed = await get_speech_to_text().transcribe(audio_bytes)
+                    logger.info("[broker] audio transcribed (%d chars): %s", len(transcribed), transcribed[:120])
+                    msg_class = await asyncio.to_thread(classify_broker_message, transcribed)
+                    logger.info("[broker] classified as: %s", msg_class)
+                    if msg_class == "lead":
+                        reply = await asyncio.to_thread(handle_broker_lead, from_number, transcribed, wa_profile_name)
+                    else:
+                        reply = await asyncio.to_thread(handle_broker_text, from_number, transcribed, wa_profile_name)
+
                 elif msg_type == "text":
                     text = message["text"]["body"].strip()
-                    reply = await asyncio.to_thread(handle_broker_text, from_number, text, wa_profile_name)
-                else:
-                    reply = ""  # ignore audio/other from brokers
+                    msg_class = await asyncio.to_thread(classify_broker_message, text)
+                    logger.info("[broker] text classified as: %s", msg_class)
+                    if msg_class == "lead":
+                        reply = await asyncio.to_thread(handle_broker_lead, from_number, text, wa_profile_name)
+                    else:
+                        reply = await asyncio.to_thread(handle_broker_text, from_number, text, wa_profile_name)
 
                 if reply:
                     await send_response(from_number, reply, "text")
