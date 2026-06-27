@@ -57,5 +57,15 @@ class Settings(BaseSettings):
     SAARTHI_API_URL: str = "http://localhost:3000"
     SAARTHI_API_KEY: str | None = None
 
+    # Comma-separated phone numbers (digits only, with country code) of brokers
+    # who post listings in the WhatsApp group. Messages from these numbers are
+    # routed to the listing intake flow instead of the lead qualification flow.
+    # Example: "919876543210,919012345678"
+    BROKER_PHONE_NUMBERS: str = ""
+
+    # WhatsApp Cloud API credentials — used by broker_intake to download media.
+    WHATSAPP_ACCESS_TOKEN: str | None = None
+    WHATSAPP_PHONE_NUMBER_ID: str | None = None
+
 
 settings = Settings()
