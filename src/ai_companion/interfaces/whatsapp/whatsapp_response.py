@@ -315,6 +315,30 @@ async def whatsapp_handler(request: Request) -> Response:
             except Exception as crm_error:
                 logger.error(f"Failed to record outbound in Saarthi CRM (non-fatal): {crm_error}")
 
+            # Send listing photos as native WhatsApp images for every property whose
+            # link the bot just shared. Self-deduping: only fires on a turn that
+            # actually shared listings (reply contains /listings/ links).
+            try:
+                if response_message and "/listings/" in response_message:
+                    from ai_companion.modules.saarthi.client import get_saarthi_client
+
+                    saarthi = get_saarthi_client()
+                    if saarthi.configured:
+                        ctx = await asyncio.to_thread(saarthi.get_context, from_number)
+                        for m in (ctx.get("sentMatches") or []):
+                            url = m.get("url") or ""
+                            if not url or url not in response_message:
+                                continue
+                            media_url = m.get("imageUrl") or m.get("videoUrl")
+                            if not media_url:
+                                continue
+                            kind = "image" if m.get("imageUrl") else "video"
+                            bits = [b for b in (m.get("title"), m.get("priceLabel"), m.get("locality")) if b]
+                            caption = " — ".join(bits[:2]) + (f", {m['locality']}" if m.get("locality") else "")
+                            await send_media_by_link(from_number, media_url, f"{caption}\n{url}", kind)
+            except Exception as media_error:
+                logger.error(f"Failed to send listing media (non-fatal): {media_error}")
+
             return Response(content="Message processed", status_code=200)
 
         elif "statuses" in change_value:
@@ -372,6 +396,45 @@ async def process_audio_message(message: Dict) -> str:
     audio_data = audio_buffer.read()
 
     return await get_speech_to_text().transcribe(audio_data)
+
+
+async def send_media_by_link(
+    to_number: str, media_url: str, caption: str = "", kind: str = "image"
+) -> bool:
+    """Send an image/video to WhatsApp by PUBLIC URL (no upload needed).
+
+    Our listing media lives on public Azure Blob URLs, so WhatsApp can fetch them
+    directly via the `link` field. Non-fatal — returns False on any failure.
+    """
+    if kind not in ("image", "video"):
+        kind = "image"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    media_obj: dict = {"link": media_url}
+    if caption:
+        media_obj["caption"] = caption[:1024]
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": kind,
+        kind: media_obj,
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages",
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+        if resp.status_code != 200:
+            logger.error("send_media_by_link %s failed: %s %s", kind, resp.status_code, resp.text[:200])
+        return resp.status_code == 200
+    except Exception as exc:
+        logger.error("send_media_by_link error: %s", exc)
+        return False
 
 
 async def send_response(
