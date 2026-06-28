@@ -138,6 +138,17 @@ def format_lead_context(ctx: dict) -> str:
     name = ctx.get("name")
     lines.append(f"- Lead: {name or 'name unknown'} | status: {ctx.get('status')} | score: {ctx.get('score')}/100")
 
+    # Durable transcript from the CRM — the source of truth for what's been said,
+    # so the bot never re-asks even if its short-term memory was reset.
+    transcript = ctx.get("transcript") or []
+    if transcript:
+        lines.append("- Conversation so far (already said — do NOT ask any of this again, continue from here):")
+        for m in transcript[-12:]:
+            who = "Buyer" if m.get("role") == "user" else "You"
+            text = str(m.get("content", "")).replace("\n", " ").strip()[:220]
+            if text:
+                lines.append(f"    {who}: {text}")
+
     req = ctx.get("requirements") or {}
     if req:
         bits = []
