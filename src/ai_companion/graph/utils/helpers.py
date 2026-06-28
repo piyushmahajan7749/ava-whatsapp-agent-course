@@ -101,6 +101,31 @@ def remove_asterisk_content(text: str) -> str:
     return re.sub(r"\*.*?\*", "", text).strip()
 
 
+def strip_markdown_formatting(text: str) -> str:
+    """Strip WhatsApp/markdown emphasis markers (*, _, ~, `, headings, bullets)
+    while KEEPING the words. So "*monthly budget*" -> "monthly budget".
+
+    The bot must read as a plain human texting — no bold/italic/code formatting.
+    """
+    if not text:
+        return text
+    # Paired emphasis -> keep inner text
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
+    # Single-underscore italics, but only when bounded by non-word chars so
+    # snake_case identifiers and URLs are left intact.
+    text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
+    text = re.sub(r"~~(.+?)~~", r"\1", text)
+    text = re.sub(r"`{1,3}(.+?)`{1,3}", r"\1", text)
+    # Markdown headings + leading bullets
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
+    text = re.sub(r"(?m)^\s*[-*]\s+", "", text)
+    # Any stray leftover formatting chars
+    text = text.replace("*", "").replace("`", "")
+    return text
+
+
 def chunk_message_by_sentences(text: str, max_length: int = 600) -> list[str]:
     """
     Split a message into chunks at sentence boundaries to avoid mid-sentence cutoffs.

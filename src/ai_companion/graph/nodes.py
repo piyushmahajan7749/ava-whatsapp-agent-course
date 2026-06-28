@@ -21,6 +21,7 @@ from ai_companion.graph.utils.chains import get_character_response_chain
 from ai_companion.graph.utils.helpers import (
     chunk_response_into_messages,
     get_chat_model,
+    strip_markdown_formatting,
 )
 from ai_companion.modules.language.hindi_detection import contains_hindi, should_respond_in_hindi
 from ai_companion.modules.language.hindi_translation import translate_response_if_needed
@@ -148,6 +149,10 @@ async def conversation_node(state: AICompanionState, config: RunnableConfig):
     if should_translate_to_hindi and not contains_hindi(response_text):
         response_text = translate_response_if_needed(response_text, True)
         logger.info("🇮🇳 [CONVERSATION] Translated to Hindi (fallback)")
+
+    # Strip any markdown/bold the model added — WhatsApp replies must read plain.
+    # (The AsteriskRemovalParser is skipped when tools are enabled, so do it here.)
+    response_text = strip_markdown_formatting(response_text)
 
     # Chunk into WhatsApp-sized messages
     message_chunks = chunk_response_into_messages(response_text)
