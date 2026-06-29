@@ -90,13 +90,16 @@ _EXTRACT_LEAD_PROMPT = (
 def classify_broker_message(text: str) -> str:
     """Returns 'listing' or 'lead'. Defaults to 'listing' on error."""
     try:
+        # gpt-5-mini is a reasoning model: it needs max_completion_tokens with
+        # real headroom (reasoning eats the budget) and only the default
+        # temperature. max_tokens=5 / temperature=0 made every call error out
+        # and silently default to "listing".
         resp = _ai_client().chat.completions.create(
             model=settings.SMALL_TEXT_MODEL_NAME,
             messages=[{"role": "user", "content": _CLASSIFY_PROMPT.format(text=text[:600])}],
-            max_tokens=5,
-            temperature=0,
+            max_completion_tokens=2000,
         )
-        result = resp.choices[0].message.content.strip().upper()
+        result = (resp.choices[0].message.content or "").strip().upper()
         return "lead" if "LEAD" in result else "listing"
     except Exception as exc:
         logger.warning("[broker_intake] classify failed, defaulting to listing: %s", exc)
@@ -113,9 +116,9 @@ def _extract_lead(text: str) -> dict:
                 {"role": "user", "content": text},
             ],
             response_format={"type": "json_object"},
-            temperature=0,
+            max_completion_tokens=2000,
         )
-        return json.loads(resp.choices[0].message.content)
+        return json.loads(resp.choices[0].message.content or "{}")
     except Exception as exc:
         logger.error("[broker_intake] lead extraction failed: %s", exc)
         return {}
@@ -266,7 +269,7 @@ def handle_broker_text(phone: str, text: str, sender_name: Optional[str] = None)
     # Remember this listing for incoming photos
     _pending[phone] = (listing_id, time.monotonic())
 
-    return f"✅ Got it! *{title}* saved. Send photos to add them 📸"
+    return f"✅ Got it! {title} saved. Send 2-4 photos to add them 📸"
 
 
 # ---------------------------------------------------------------------------
