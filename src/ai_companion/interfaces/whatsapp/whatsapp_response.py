@@ -3,8 +3,14 @@ import os
 import sys
 import asyncio
 import re
+from collections import deque
 from io import BytesIO
 from typing import Dict
+
+# Webhook de-duplication: Meta retries the webhook if we don't return 200 fast
+# enough (slow turns now also send media), which would re-run the graph and
+# double-send. Track recently-seen WhatsApp message ids and skip repeats.
+_PROCESSED_MESSAGE_IDS: deque = deque(maxlen=3000)
 
 import httpx
 from fastapi import APIRouter, Request, Response
@@ -146,6 +152,15 @@ async def whatsapp_handler(request: Request) -> Response:
             message = change_value["messages"][0]
             from_number = message["from"]
             session_id = from_number
+
+            # Skip duplicate webhook deliveries (Meta retries) so we never
+            # process the same message — or double-send its photos — twice.
+            message_id = message.get("id")
+            if message_id:
+                if message_id in _PROCESSED_MESSAGE_IDS:
+                    logger.info("Duplicate webhook for message %s — ignoring", message_id)
+                    return Response(content="Duplicate ignored", status_code=200)
+                _PROCESSED_MESSAGE_IDS.append(message_id)
 
             # WhatsApp profile name — passed to the graph so the CRM lead gets a name.
             wa_profile_name = None
@@ -319,9 +334,10 @@ async def whatsapp_handler(request: Request) -> Response:
             except Exception as crm_error:
                 logger.error(f"Failed to record outbound in Saarthi CRM (non-fatal): {crm_error}")
 
-            # Send listing photos as native WhatsApp images for every property whose
-            # link the bot just shared. Self-deduping: only fires on a turn that
-            # actually shared listings (reply contains /listings/ links).
+            # Send each listing the bot just shared as a structured photo "card":
+            # a hero image with an organized caption, plus a few more photos when
+            # it's a single listing. Self-deduping: only fires on a turn whose
+            # reply contains the listing's /listings/ link.
             try:
                 if response_message and "/listings/" in response_message:
                     from ai_companion.modules.saarthi.client import get_saarthi_client
@@ -329,17 +345,33 @@ async def whatsapp_handler(request: Request) -> Response:
                     saarthi = get_saarthi_client()
                     if saarthi.configured:
                         ctx = await asyncio.to_thread(saarthi.get_context, from_number)
-                        for m in (ctx.get("sentMatches") or []):
-                            url = m.get("url") or ""
-                            if not url or url not in response_message:
-                                continue
-                            media_url = m.get("imageUrl") or m.get("videoUrl")
-                            if not media_url:
-                                continue
-                            kind = "image" if m.get("imageUrl") else "video"
-                            bits = [b for b in (m.get("title"), m.get("priceLabel"), m.get("locality")) if b]
-                            caption = " — ".join(bits[:2]) + (f", {m['locality']}" if m.get("locality") else "")
-                            await send_media_by_link(from_number, media_url, f"{caption}\n{url}", kind)
+                        shared = [
+                            m for m in (ctx.get("sentMatches") or [])
+                            if (m.get("url") or "") and m["url"] in response_message
+                        ]
+                        single = len(shared) == 1
+                        for m in shared:
+                            spec_bits = []
+                            if m.get("bhk"):
+                                spec_bits.append(f"{m['bhk']} BHK")
+                            if m.get("area"):
+                                spec_bits.append(str(m["area"]))
+                            if m.get("locality"):
+                                spec_bits.append(str(m["locality"]))
+                            caption = (
+                                f"🏠 {m.get('title')}\n"
+                                f"💰 {m.get('priceLabel')}"
+                                + (f"\n📐 {' · '.join(spec_bits)}" if spec_bits else "")
+                                + f"\n🔗 {m.get('url')}"
+                            )
+                            images = m.get("imageUrls") or []
+                            if images:
+                                await send_media_by_link(from_number, images[0], caption, "image")
+                                # Mini gallery only for a single listing (avoid spam).
+                                for extra in (images[1:4] if single else []):
+                                    await send_media_by_link(from_number, extra, "", "image")
+                            elif m.get("videoUrl"):
+                                await send_media_by_link(from_number, m["videoUrl"], caption, "video")
             except Exception as media_error:
                 logger.error(f"Failed to send listing media (non-fatal): {media_error}")
 
