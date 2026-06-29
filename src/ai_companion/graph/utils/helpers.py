@@ -47,49 +47,30 @@ def chunk_response_into_messages(response_text: str) -> list:
     Returns:
         List of message chunks, each focused on one topic/question
     """
-    if not response_text or len(response_text.strip()) < 50:
-        return [response_text.strip()]
-    
-    # Split by common sentence boundaries
-    sentences = []
-    current_sentence = ""
-    
-    for char in response_text:
-        current_sentence += char
-        if char in '.!?':
-            sentences.append(current_sentence.strip())
-            current_sentence = ""
-    
-    if current_sentence.strip():
-        sentences.append(current_sentence.strip())
-    
-    # Group sentences into focused messages
+    text = (response_text or "").strip()
+    if len(text) < 50:
+        return [text] if text else []
+
+    # Split ONLY at sentence-ending punctuation that is followed by whitespace,
+    # so URLs (saarthi-website-ten.vercel.app) and decimals (₹1.05 Cr) are never
+    # broken apart with stray spaces — which would make links unclickable.
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+
+    # Group sentences into focused messages (~200 chars each).
     messages = []
     current_message = ""
-    
     for sentence in sentences:
-        if not sentence:
-            continue
-            
-        # If adding this sentence would make the message too long, start a new one
-        if len(current_message + " " + sentence) > 200:
-            if current_message:
-                messages.append(current_message.strip())
+        candidate = f"{current_message} {sentence}".strip() if current_message else sentence
+        if current_message and len(candidate) > 200:
+            messages.append(current_message)
             current_message = sentence
         else:
-            if current_message:
-                current_message += " " + sentence
-            else:
-                current_message = sentence
-    
+            current_message = candidate
+
     if current_message.strip():
         messages.append(current_message.strip())
-    
-    # Ensure we have at least one message
-    if not messages:
-        messages = [response_text.strip()]
-    
-    return messages
+
+    return messages or [text]
 
 
 def get_image_to_text_module():

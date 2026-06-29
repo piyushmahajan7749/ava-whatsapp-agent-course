@@ -88,7 +88,11 @@ def _finalize_whatsapp_text(text: str, max_chars: int = 1500) -> str:
     if not text:
         return ""
 
-    text = " ".join(text.split()).strip()
+    # Collapse runs of spaces/tabs but PRESERVE line breaks so a list of options
+    # stays readable (one per line) instead of one flat blob.
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = "\n".join(line.strip() for line in text.split("\n")).strip()
     if not text:
         return ""
 
