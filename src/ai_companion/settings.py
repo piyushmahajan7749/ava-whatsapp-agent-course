@@ -13,17 +13,19 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8"
     )
 
-    GROQ_API_KEY: str
-    ELEVENLABS_API_KEY: str
-    ELEVENLABS_VOICE_ID: str
-    TOGETHER_API_KEY: str
+    # Groq is used for voice-note transcription; the rest are legacy saarthi
+    # integrations kept optional so the ANGC branch can boot without them.
+    GROQ_API_KEY: str = ""
+    ELEVENLABS_API_KEY: str = ""
+    ELEVENLABS_VOICE_ID: str = ""
+    TOGETHER_API_KEY: str = ""
     AZURE_OPENAI_API_KEY: str
     AZURE_OPENAI_API_ENDPOINT: str
     AZURE_OPENAI_API_VERSION: str
     AZURE_OPENAI_VISION_DEPLOYMENT: str
 
-    QDRANT_API_KEY: str | None
-    QDRANT_URL: str
+    QDRANT_API_KEY: str | None = None
+    QDRANT_URL: str = ""
     QDRANT_PORT: str = "6333"
     QDRANT_HOST: str | None = None
 
@@ -66,6 +68,25 @@ class Settings(BaseSettings):
     # WhatsApp Cloud API credentials — used by broker_intake to download media.
     WHATSAPP_ACCESS_TOKEN: str | None = None
     WHATSAPP_PHONE_NUMBER_ID: str | None = None
+
+    # --- ANGC executive-assistant branch ---
+    # Comma-separated WhatsApp numbers of the director (NG Sir). Only these
+    # numbers can assign tasks. Example: "919876543210"
+    DIRECTOR_PHONE_NUMBERS: str = ""
+    # SQLite file for tasks + dashboard users (relative = under the app workdir,
+    # i.e. /app/data/... in the container).
+    ANGC_DB_PATH: str = "data/angc_tasks.db"
+    # WhatsApp-notify the assignee when a task is created, and NG Sir when done.
+    ANGC_NOTIFY_ASSIGNEES: bool = True
+    # Login email seeded for the admin (Nikhil Gupta) account.
+    ANGC_ADMIN_EMAIL: str = "director@angcgroup.com"
+    # First-login password for all seeded users; change via dashboard.
+    ANGC_DEFAULT_PASSWORD: str = "Angc@2026"
+    # Secret for signing dashboard session cookies. Set a long random string in
+    # prod; if empty, a random one is generated at startup (logins reset on restart).
+    ANGC_SESSION_SECRET: str = ""
+    # Public URL of the dashboard, included in WhatsApp notifications (optional).
+    ANGC_DASHBOARD_URL: str | None = None
 
 
 settings = Settings()

@@ -327,3 +327,5 @@ short_term_memory/
 
 # Google Calendar OAuth tokens (contains user-specific credentials)
 token.json
+# ANGC local task DB
+data/
