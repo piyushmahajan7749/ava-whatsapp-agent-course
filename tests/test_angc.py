@@ -132,6 +132,40 @@ def test_list_and_stats():
     assert by_name["Nikhil Uikey"]["total"] == 0
 
 
+def test_update_task_fields_and_delete():
+    task = db.create_task("Sandhya", "Financial Management", "BS payment correct 2 lakh", "raw")
+    ramu = db.get_user_by_name("Ramu")
+    updated = db.update_task_fields(
+        task["id"], title="Ayush bhai se payment collect", message="new msg",
+        assignee_id=ramu["id"], status="hacked", bogus="x",
+    )
+    assert updated["title"] == "Ayush bhai se payment collect"
+    assert updated["assignee_name"] == "Ramu"
+    assert updated["status"] == "pending"  # status/bogus not editable via fields
+
+    assert db.delete_task(task["id"]) is True
+    assert db.get_task(task["id"]) is None
+    assert db.delete_task(task["id"]) is False
+
+
+def test_director_edit_delete_regexes():
+    from ai_companion.modules.angc.task_intake import _DIR_DELETE_RE, _DIR_EDIT_RE
+
+    m = _DIR_EDIT_RE.match("Edit task 3 - Ayush bhai se payment collect karni hai..2 lakh")
+    assert m and (m.group(1) or m.group(3)) == "3"
+    assert "Ayush bhai" in (m.group(2) or m.group(4))
+    m = _DIR_EDIT_RE.match("task 5 update karo - naya detail @Ramu")
+    assert m and (m.group(1) or m.group(3)) == "5"
+    m = _DIR_EDIT_RE.match("update task #7: kal tak")
+    assert m and (m.group(1) or m.group(3)) == "7"
+
+    assert _DIR_DELETE_RE.match("delete task 3")
+    assert _DIR_DELETE_RE.match("Task 4 cancel karo")
+    assert _DIR_DELETE_RE.match("task #9 hata do")
+    assert not _DIR_DELETE_RE.match("cancel task 3 ka payment follow up")  # new task, not delete
+    assert not _DIR_EDIT_RE.match("Central park hotel case update .\n@~Sandhya")
+
+
 # ---------------------------------------------------------------------------
 # dashboard auth
 # ---------------------------------------------------------------------------

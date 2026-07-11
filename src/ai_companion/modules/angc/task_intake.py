@@ -48,16 +48,20 @@ _EXTRACT_PROMPT = """You are the WhatsApp executive assistant of Nikhil Gupta Si
 He sends short messages — often Hinglish, sometimes just a case name and an @mention — to delegate work to his team: {employees}.
 
 Analyse his message and return JSON with these exact fields:
-{{"intent":"TASK"|"QUERY"|"OTHER",
+{{"intent":"TASK"|"EDIT"|"DELETE"|"QUERY"|"OTHER",
+"task_id":number|null,
 "title":string,
 "category":string,
 "assignee":string|null,
 "due_date":"YYYY-MM-DD"|null}}
 
 Rules:
-- intent TASK: he wants work done, tracked, reminded, updated, or delegated (even a bare case name with a person's name/mention is a TASK).
+- intent TASK: he wants NEW work done, tracked, reminded, or delegated (even a bare case name with a person's name/mention is a TASK).
+- intent EDIT: he refers to an EXISTING task number and wants it changed/corrected/reassigned (e.g. "task 3 edit karo", "task 5 mein badlav", "task 2 Ramu ko de do"). Set task_id.
+- intent DELETE: he wants an existing task number cancelled/removed ("task 3 cancel/delete/hata do"). Set task_id.
 - intent QUERY: he is asking about existing tasks — status, pending count, what someone is working on, summary.
 - intent OTHER: greetings or anything that is neither.
+- task_id: only for EDIT/DELETE, the task number he mentions; else null.
 - title: a short crisp task title (max 12 words), keep his own words/names as-is (do NOT translate names or case names).
 - category: pick the closest from this list (use "{default_category}" when unsure):
 {categories}
@@ -90,14 +94,19 @@ def extract_task(text: str) -> dict:
         data = {}
 
     intent = (data.get("intent") or "TASK").upper()
-    if intent not in ("TASK", "QUERY", "OTHER"):
+    if intent not in ("TASK", "EDIT", "DELETE", "QUERY", "OTHER"):
         intent = "TASK"
     category = data.get("category") or team.DEFAULT_CATEGORY
     if category not in team.CATEGORIES:
         category = team.DEFAULT_CATEGORY
     title = (data.get("title") or "").strip() or text.strip().split("\n")[0][:80]
+    try:
+        task_id = int(data.get("task_id"))
+    except (TypeError, ValueError):
+        task_id = None
     return {
         "intent": intent,
+        "task_id": task_id,
         "title": title,
         "category": category,
         "assignee": team.resolve_employee_name(data.get("assignee")),
@@ -135,14 +144,40 @@ def _send_whatsapp(to_number: str, text: str) -> None:
 # Director flow
 # ---------------------------------------------------------------------------
 
+# Deterministic fast-paths ("edit task 3 - ...", "task 3 delete") so common
+# commands never depend on the LLM.
+_DIR_EDIT_RE = re.compile(
+    r"^(?:edit|update|change)\s*task\s*#?(\d+)\s*[-–:.,]*\s*(.*)$"
+    r"|^task\s*#?(\d+)\s*(?:edit|update)\s*(?:karo|kar\s*do)?\s*[-–:.,]*\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+_DIR_DELETE_RE = re.compile(
+    r"^(?:delete|remove|cancel)\s*task\s*#?(\d+)\s*$"
+    r"|^task\s*#?(\d+)\s*(?:delete|cancel|remove|hata\s*do|hatao|cancel\s*karo)\s*\.?\s*$",
+    re.IGNORECASE,
+)
+
+
 def handle_director_message(text: str) -> str:
     """Process a message from NG Sir. Returns the Hinglish reply for him."""
     text = (text or "").strip()
     if not text:
         return "Sir, message samajh nahi aaya. Kripya task dobara bhejiye 🙏"
 
+    m = _DIR_EDIT_RE.match(text)
+    if m:
+        task_id = int(m.group(1) or m.group(3))
+        return _handle_edit(task_id, (m.group(2) or m.group(4) or "").strip())
+    m = _DIR_DELETE_RE.match(text)
+    if m:
+        return _handle_delete(int(m.group(1) or m.group(2)))
+
     extracted = extract_task(text)
 
+    if extracted["intent"] == "EDIT" and extracted["task_id"]:
+        return _handle_edit(extracted["task_id"], text)
+    if extracted["intent"] == "DELETE" and extracted["task_id"]:
+        return _handle_delete(extracted["task_id"])
     if extracted["intent"] == "QUERY":
         return _answer_query(text)
     if extracted["intent"] == "OTHER":
@@ -177,6 +212,128 @@ def handle_director_message(text: str) -> str:
     if notified:
         reply += f"\n\n{task['assignee_name']} ji ko WhatsApp par inform kar diya gaya hai ✅"
     return reply
+
+
+def _task_card(task: dict) -> str:
+    card = (
+        f"📋 Task #{task['id']}: {task['title']}\n"
+        f"👤 Assigned to: {task['assignee_name']} ({task['assignee_full_name']})\n"
+        f"🏷️ Category: {task['category']}"
+    )
+    if task.get("due_date"):
+        card += f"\n📅 Due: {task['due_date']}"
+    return card
+
+
+_REASSIGN_FILLER = {
+    "edit", "update", "change", "task", "karo", "kar", "kardo", "do", "de",
+    "dedo", "ko", "se", "ji", "ka", "ki", "ke", "transfer", "assign",
+    "reassign", "abhi", "please", "pls", "is", "ye", "yeh", "wala", "isko",
+}
+
+
+def _is_reassign_only(text: str) -> bool:
+    """True if the edit text is just 'give task N to <member>' with no new content."""
+    t = text.lower()
+    for key, emp in team.EMPLOYEES.items():
+        for alias in {key.lower(), emp["full_name"].lower(), *emp["aliases"]}:
+            t = t.replace(alias, " ")
+    words = re.findall(r"[a-zऀ-ॿ]+", t)
+    return all(w in _REASSIGN_FILLER for w in words)
+
+
+def _handle_edit(task_id: int, new_text: str) -> str:
+    task = db.get_task(task_id)
+    if not task:
+        return f"Sir, Task #{task_id} nahi mila 🤔 'edit task <number> - naya detail' format mein bhejiye."
+    if not new_text:
+        return (
+            f"Sir, Task #{task_id} mein kya badalna hai?\n"
+            f"Aise bhejiye: edit task {task_id} - naya detail"
+        )
+
+    old_assignee = task["assignee_name"]
+    mention = team.extract_mention(new_text)
+
+    if _is_reassign_only(new_text):
+        # Pure transfer ("task 3 Ramu ko de do") — keep title/message/category.
+        new_assignee = mention or team.resolve_employee_name(
+            next((w for w in new_text.replace("@~", " ").split() if team.resolve_employee_name(w)), None)
+        )
+        extracted = None
+        updates: dict = {}
+    else:
+        # Content changed — re-extract fields from the corrected text; ignore its intent.
+        extracted = extract_task(new_text)
+        updates = {
+            "title": extracted["title"],
+            "message": new_text,
+            "category": extracted["category"],
+        }
+        if extracted["due_date"]:
+            updates["due_date"] = extracted["due_date"]
+        new_assignee = mention or extracted["assignee"]
+
+    reassigned = bool(new_assignee and new_assignee != old_assignee)
+    if reassigned:
+        user = db.get_user_by_name(new_assignee)
+        if user:
+            updates["assignee_id"] = user["id"]
+    if not updates:
+        return (
+            f"Sir, Task #{task_id} mein koi badlav samajh nahi aaya 🙏\n"
+            f"Aise bhejiye: edit task {task_id} - naya detail"
+        )
+
+    updated = db.update_task_fields(task_id, **updates)
+    if not updated:
+        return "Sir, task update karne mein dikkat aa gayi ⚠️ Kripya dobara try kariye."
+
+    if settings.ANGC_NOTIFY_ASSIGNEES:
+        if reassigned:
+            old_user = db.get_user_by_name(old_assignee)
+            if old_user and old_user.get("phone"):
+                _send_whatsapp(
+                    old_user["phone"],
+                    f"ℹ️ Task #{task_id} ({task['title']}) ab aapke paas nahi hai — "
+                    f"NG Sir ne {updated['assignee_name']} ji ko de diya hai.",
+                )
+            if updated.get("assignee_phone"):
+                _send_whatsapp(
+                    updated["assignee_phone"],
+                    f"🔔 Task aapko transfer hua — NG Sir ki taraf se\n\n{_task_card(updated)}\n\n"
+                    f"Complete hone par yahin reply karein: done {task_id}",
+                )
+        elif updated.get("assignee_phone"):
+            _send_whatsapp(
+                updated["assignee_phone"],
+                f"✏️ Task #{task_id} update hua hai — NG Sir ki taraf se\n\n{_task_card(updated)}",
+            )
+
+    reply = f"Ji Sir 🙏 Task #{task_id} update kar diya hai.\n\n{_task_card(updated)}"
+    if reassigned:
+        reply += f"\n\n{old_assignee} ji se lekar {updated['assignee_name']} ji ko de diya gaya hai ✅"
+    elif updated.get("assignee_phone"):
+        reply += f"\n\n{updated['assignee_name']} ji ko update bhej diya gaya hai ✅"
+    return reply
+
+
+def _handle_delete(task_id: int) -> str:
+    task = db.get_task(task_id)
+    if not task:
+        return f"Sir, Task #{task_id} nahi mila 🤔 Shayad pehle hi delete ho chuka hai."
+    db.delete_task(task_id)
+    if settings.ANGC_NOTIFY_ASSIGNEES and task.get("assignee_phone"):
+        _send_whatsapp(
+            task["assignee_phone"],
+            f"❌ Task #{task_id} cancel ho gaya hai — NG Sir ki taraf se\n\n"
+            f"📋 {task['title']}\n\nIs par kaam karne ki zaroorat nahi hai.",
+        )
+    return (
+        f"Ji Sir 🙏 Task #{task_id} delete kar diya hai.\n\n"
+        f"📋 {task['title']} ({task['assignee_name']})\n\n"
+        f"{task['assignee_name']} ji ko inform kar diya gaya hai ✅"
+    )
 
 
 def _notify_assignee(task: dict) -> bool:

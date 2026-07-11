@@ -238,6 +238,27 @@ def list_tasks(
         return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
+_EDITABLE_FIELDS = {"title", "message", "category", "assignee_id", "due_date"}
+
+
+def update_task_fields(task_id: int, **fields) -> dict | None:
+    """Update task fields (title/message/category/assignee_id/due_date)."""
+    updates = {k: v for k, v in fields.items() if k in _EDITABLE_FIELDS}
+    if not updates:
+        return get_task(task_id)
+    updates["updated_at"] = _utcnow()
+    set_clause = ", ".join(f"{k}=?" for k in updates)
+    with _connect() as conn:
+        conn.execute(f"UPDATE tasks SET {set_clause} WHERE id=?", (*updates.values(), task_id))
+    return get_task(task_id)
+
+
+def delete_task(task_id: int) -> bool:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+        return cur.rowcount > 0
+
+
 def update_task_status(task_id: int, status: str) -> dict | None:
     if status not in TASK_STATUSES:
         raise ValueError(f"Invalid status: {status}")

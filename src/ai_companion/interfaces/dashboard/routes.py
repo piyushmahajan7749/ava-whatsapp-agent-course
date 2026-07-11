@@ -55,6 +55,7 @@ button.act { border: 0; border-radius: 8px; padding: 7px 12px; font-size: 13px; 
 .b-start { background: #dbeafe; color: #1d4ed8; }
 .b-done { background: #dcfce7; color: #15803d; }
 .b-reopen { background: #f1f5f9; color: #475569; }
+.b-del { background: #fee2e2; color: #b91c1c; }
 .login-box { max-width: 380px; margin: 60px auto; background: #fff; border-radius: 14px; padding: 28px; box-shadow: 0 4px 16px rgba(15,23,42,.1); }
 .login-box h1 { text-align: center; margin-bottom: 4px; }
 .login-box .sub { text-align: center; }
@@ -99,7 +100,7 @@ def _status_chip(status: str) -> str:
     )
 
 
-def _task_card(task: dict, can_update: bool, show_assignee: bool = False) -> str:
+def _task_card(task: dict, can_update: bool, show_assignee: bool = False, can_delete: bool = False) -> str:
     buttons = ""
     if can_update:
         if task["status"] == "pending":
@@ -109,6 +110,12 @@ def _task_card(task: dict, can_update: bool, show_assignee: bool = False) -> str
             buttons += _status_button(task["id"], "done", "Mark Done", "b-done")
         else:
             buttons += _status_button(task["id"], "pending", "Reopen", "b-reopen")
+    if can_delete:
+        buttons += (
+            f'<form class="inline" method="post" action="/tasks/{task["id"]}/delete" '
+            f'onsubmit="return confirm(\'Delete task #{task["id"]}?\')">'
+            f'<button class="act b-del" type="submit">Delete</button></form>'
+        )
 
     assignee_line = f" · 👤 {_esc(task['assignee_name'])}" if show_assignee else ""
     due_line = f" · 📅 Due {_esc(task['due_date'])}" if task.get("due_date") else ""
@@ -225,7 +232,9 @@ def _admin_dashboard(user: dict) -> HTMLResponse:
 </div>"""
 
     recent = db.list_tasks(limit=15)
-    recent_html = "".join(_task_card(t, can_update=True, show_assignee=True) for t in recent) or '<div class="empty">Abhi koi task nahi.</div>'
+    recent_html = "".join(
+        _task_card(t, can_update=True, show_assignee=True, can_delete=True) for t in recent
+    ) or '<div class="empty">Abhi koi task nahi.</div>'
 
     body = f"""<h1>Namaste, Nikhil Gupta Sir 🙏</h1>
 <div class="sub">ANGC team task overview — {totals['pending']} pending · {totals['in_progress']} in progress · {totals['done']} done</div>
@@ -248,7 +257,9 @@ def employee_tasks(request: Request, employee_id: int, status: str = ""):
         return _page("Not found", '<div class="empty">Employee nahi mila.</div>', user)
 
     tasks = db.list_tasks(assignee_id=employee_id, status=status or None)
-    cards = "".join(_task_card(t, can_update=True) for t in tasks) or '<div class="empty">Koi task nahi hai.</div>'
+    cards = "".join(
+        _task_card(t, can_update=True, can_delete=True) for t in tasks
+    ) or '<div class="empty">Koi task nahi hai.</div>'
     body = f"""<h1>{_esc(employee['name'])} — {_esc(employee['full_name'])}</h1>
 <div class="sub">{_esc(employee['email'])} · {_esc(employee['phone'])} · <a href="/dashboard">← back to dashboard</a></div>
 {_filter_bar(f'/admin/employee/{employee_id}', status)}
@@ -269,6 +280,18 @@ def change_status(request: Request, task_id: int, status: str = Form(...)):
         return RedirectResponse("/dashboard", status_code=303)
     if status in db.TASK_STATUSES:
         db.update_task_status(task_id, status)
+    referer = request.headers.get("referer") or "/dashboard"
+    return RedirectResponse(referer, status_code=303)
+
+
+@dashboard_router.post("/tasks/{task_id}/delete")
+def delete_task_route(request: Request, task_id: int):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if user["role"] != "admin":
+        return RedirectResponse("/dashboard", status_code=303)
+    db.delete_task(task_id)
     referer = request.headers.get("referer") or "/dashboard"
     return RedirectResponse(referer, status_code=303)
 
