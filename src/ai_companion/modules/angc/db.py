@@ -32,12 +32,11 @@ def _connect() -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=15)
     conn.row_factory = sqlite3.Row
-    try:
-        # WAL is unreliable on network mounts (Azure Files/SMB); fall back to
-        # the default journal there — single replica, so plain locking is fine.
-        conn.execute("PRAGMA journal_mode=WAL")
-    except sqlite3.OperationalError:
-        pass
+    if settings.ANGC_SQLITE_WAL:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 

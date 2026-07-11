@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     ANGC_DB_PATH: str = "data/angc_tasks.db"
     # WhatsApp-notify the assignee when a task is created, and NG Sir when done.
     ANGC_NOTIFY_ASSIGNEES: bool = True
+    # WAL journal for the tasks DB. Disable on network mounts (Azure Files/SMB
+    # with nobrl) where WAL's shared-memory file is unsafe.
+    ANGC_SQLITE_WAL: bool = True
     # Login email seeded for the admin (Nikhil Gupta) account.
     ANGC_ADMIN_EMAIL: str = "director@angcgroup.com"
     # First-login password for all seeded users; change via dashboard.
