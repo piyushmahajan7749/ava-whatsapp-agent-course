@@ -301,6 +301,25 @@ table.users th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .
 .role-admin { background: #f6d98a; color: #6b4e0c; }
 .role-employee { background: #e3edfd; color: #1d4ed8; }
 
+/* ---- task detail ---- */
+.detail {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: clamp(18px, 3vw, 28px); box-shadow: var(--shadow-sm); max-width: 760px;
+}
+.detail .d-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.detail h1 { font-size: clamp(18px, 2.6vw, 22px); }
+.detail h2 { margin: 22px 0 10px; }
+.d-msg {
+  background: var(--bg); border-left: 3px solid var(--gold-soft); border-radius: 9px;
+  padding: 13px 16px; margin: 16px 0; white-space: pre-wrap; color: var(--ink-2); font-size: 14px;
+}
+.d-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 22px; }
+.d-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 13.5px; }
+.d-row span { color: var(--ink-3); font-weight: 600; flex: none; }
+.d-row b { display: inline-flex; align-items: center; gap: 7px; text-align: right; }
+.d-row .av { width: 22px; height: 22px; font-size: 9.5px; }
+.d-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
 /* ---- misc ---- */
 .empty {
   text-align: center; padding: 46px 20px; background: var(--surface);
@@ -342,10 +361,17 @@ _BOARD_JS = """
 <script>
 (function () {
   let dragged = null;
+  let justDragged = false;
 
   document.querySelectorAll('.kcard[draggable="true"]').forEach(card => {
+    // Click anywhere on the card (except buttons/links/forms) opens the detail view.
+    card.addEventListener('click', e => {
+      if (justDragged || e.target.closest('button, a, form, input')) return;
+      window.location = '/tasks/' + card.dataset.id;
+    });
     card.addEventListener('dragstart', e => {
       dragged = card;
+      justDragged = true;
       card.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', card.dataset.id);
@@ -354,6 +380,7 @@ _BOARD_JS = """
       card.classList.remove('dragging');
       document.querySelectorAll('.col').forEach(c => c.classList.remove('dragover'));
       dragged = null;
+      setTimeout(() => { justDragged = false; }, 150);
     });
   });
 
@@ -463,8 +490,8 @@ def _kcard(task: dict, show_assignee: bool = False, can_delete: bool = False) ->
     actions += f'<a class="act b-edit" href="/tasks/{task["id"]}/edit" title="Edit">✎ Edit</a>'
     who = f'<span class="kwho">{_avatar(task["assignee_name"], "av")}{_esc(task["assignee_name"])}</span>' if show_assignee else ""
     due = f'<span class="kdate">📅 {_esc(task["due_date"])}</span>' if task.get("due_date") else ""
-    return f"""<div class="kcard" draggable="true" data-id="{task['id']}" data-status="{task['status']}" title="{_esc(task['message'])}">
-  <div class="kt"><span class="tid">#{task['id']}</span>{_esc(task['title'])}</div>
+    return f"""<div class="kcard" draggable="true" data-id="{task['id']}" data-status="{task['status']}" title="Open task #{task['id']}">
+  <div class="kt"><span class="tid">#{task['id']}</span><a href="/tasks/{task['id']}" style="color:inherit">{_esc(task['title'])}</a></div>
   <div class="kmsg">{_esc(task['message'])}</div>
   <div class="kmeta"><span class="chip tag">{_esc(task['category'])}</span>{who}{due}
     <span class="kdate">🕐 {_esc(db.to_ist_label(task['created_at']).split(',')[0])}</span></div>
@@ -666,6 +693,77 @@ def delete_task_route(request: Request, task_id: int):
 
 def _can_touch(user: dict, task: dict) -> bool:
     return user["role"] == "admin" or task["assignee_id"] == user["id"]
+
+
+@dashboard_router.get("/tasks/{task_id}", response_class=HTMLResponse)
+def task_detail(request: Request, task_id: int):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    task = db.get_task(task_id)
+    if not task or not _can_touch(user, task):
+        return RedirectResponse("/dashboard")
+
+    # Status mover: one button per lane, current one highlighted & inert.
+    status_btns = ""
+    for s in BOARD_ORDER:
+        if s == task["status"]:
+            status_btns += (
+                f'<span class="chip" style="background:{STATUS_BG[s]};color:{STATUS_COLORS[s]};'
+                f'padding:8px 16px;font-size:13px"><span class="dot"></span>{STATUS_LABELS[s]}</span>'
+            )
+        else:
+            status_btns += (
+                f'<form class="inline" method="post" action="/tasks/{task["id"]}/status">'
+                f'<input type="hidden" name="status" value="{s}">'
+                f'<button class="act b-reopen" type="submit">→ {STATUS_LABELS[s]}</button></form>'
+            )
+
+    admin_actions = ""
+    if user["role"] == "admin":
+        admin_actions = (
+            f'<form class="inline" method="post" action="/tasks/{task["id"]}/delete" '
+            f'onsubmit="return confirm(\'Delete task #{task["id"]}?\')">'
+            f'<button class="act b-del" type="submit">✕ Delete task</button></form>'
+        )
+
+    due_row = f'<div class="d-row"><span>📅 Due date</span><b>{_esc(task["due_date"])}</b></div>' if task.get("due_date") else ""
+    completed_row = (
+        f'<div class="d-row"><span>✅ Completed</span><b>{_esc(db.to_ist_label(task["completed_at"]))}</b></div>'
+        if task.get("completed_at") else ""
+    )
+
+    body = f"""<div class="sub" style="margin-bottom:10px"><a class="backlink" href="/dashboard">← Back to board</a></div>
+<div class="detail">
+  <div class="d-head">
+    <h1><span class="tid" style="color:var(--ink-3)">#{task['id']}</span> {_esc(task['title'])}</h1>
+    {_status_chip_lg(task['status'])}
+  </div>
+  <div class="d-msg">{_esc(task['message'])}</div>
+  <div class="d-grid">
+    <div class="d-row"><span>👤 Assigned to</span><b>{_avatar(task['assignee_name'], 'av')} {_esc(task['assignee_name'])} ({_esc(task['assignee_full_name'])})</b></div>
+    <div class="d-row"><span>🏷️ Category</span><b><span class="chip tag">{_esc(task['category'])}</span></b></div>
+    <div class="d-row"><span>👔 Assigned by</span><b>{_esc(task['assigned_by'])}</b></div>
+    <div class="d-row"><span>🕐 Created</span><b>{_esc(db.to_ist_label(task['created_at']))}</b></div>
+    <div class="d-row"><span>♻️ Updated</span><b>{_esc(db.to_ist_label(task['updated_at']))}</b></div>
+    {due_row}{completed_row}
+  </div>
+  <h2>Move to</h2>
+  <div class="d-actions">{status_btns}</div>
+  <h2>Actions</h2>
+  <div class="d-actions">
+    <a class="act b-edit" style="font-size:12.5px;padding:7px 15px" href="/tasks/{task['id']}/edit">✎ Edit task</a>
+    {admin_actions}
+  </div>
+</div>"""
+    return _page(f"Task #{task['id']}", body, user)
+
+
+def _status_chip_lg(status: str) -> str:
+    return (
+        f'<span class="chip" style="background:{STATUS_BG[status]};color:{STATUS_COLORS[status]};'
+        f'padding:7px 15px;font-size:13px;flex:none"><span class="dot"></span>{STATUS_LABELS[status]}</span>'
+    )
 
 
 @dashboard_router.get("/tasks/{task_id}/edit", response_class=HTMLResponse)
