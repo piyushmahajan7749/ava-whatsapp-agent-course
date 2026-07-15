@@ -162,8 +162,26 @@ def get_user_by_name(name: str) -> dict | None:
 
 def list_staff() -> list[dict]:
     with _connect() as conn:
-        rows = conn.execute("SELECT * FROM users WHERE role='staff' ORDER BY id").fetchall()
+        rows = conn.execute("SELECT * FROM users WHERE role != 'admin' ORDER BY id").fetchall()
         return [dict(r) for r in rows]
+
+
+def create_user(name: str, full_name: str, email: str, phone: str, password: str, role: str = "employee") -> dict:
+    """Create a dashboard user (admin adds employees). Phone is normalized digits."""
+    digits = "".join(c for c in (phone or "") if c.isdigit())
+    if len(digits) == 10:
+        digits = "91" + digits
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO users (name, full_name, email, phone, role, password_hash, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (name.strip(), full_name.strip() or name.strip(), email.strip().lower(), digits,
+             role, hash_password(password), _utcnow()),
+        )
+        user_id = cur.lastrowid
+    user = get_user_by_id(user_id)
+    assert user is not None
+    return user
 
 
 def set_password(user_id: int, new_password: str) -> None:
@@ -281,7 +299,7 @@ def summary_stats() -> dict:
     )
     with _connect() as conn:
         per_employee = []
-        for staff in conn.execute("SELECT * FROM users WHERE role='staff' ORDER BY id").fetchall():
+        for staff in conn.execute("SELECT * FROM users WHERE role != 'admin' ORDER BY id").fetchall():
             counts = {s: 0 for s in TASK_STATUSES}
             for row in conn.execute(
                 "SELECT status, COUNT(*) AS n FROM tasks WHERE assignee_id=? GROUP BY status", (staff["id"],)

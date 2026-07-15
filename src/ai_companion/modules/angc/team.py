@@ -98,12 +98,37 @@ def is_director(phone: str) -> bool:
     return _normalize_phone(phone) in get_director_set()
 
 
+def _db_roster() -> list[dict]:
+    """All non-admin dashboard users (seeded assistants + admin-added employees).
+
+    Lazy import: db imports this module at load time, so importing db at the
+    top here would be circular.
+    """
+    from ai_companion.modules.angc import db
+
+    try:
+        return db.list_staff()
+    except Exception:
+        return []
+
+
+def roster_names() -> list[str]:
+    names = list(EMPLOYEES.keys())
+    for u in _db_roster():
+        if u["name"] not in names:
+            names.append(u["name"])
+    return names
+
+
 def employee_by_phone(phone: str) -> str | None:
-    """Return the employee key for a WhatsApp number, if it belongs to one."""
+    """Return the employee name for a WhatsApp number, if it belongs to one."""
     digits = _normalize_phone(phone)
     for key, emp in EMPLOYEES.items():
         if emp["phone"] == digits:
             return key
+    for u in _db_roster():
+        if u["phone"] and u["phone"] == digits:
+            return u["name"]
     return None
 
 
@@ -117,8 +142,12 @@ def resolve_employee_name(candidate: str | None) -> str | None:
     for key, emp in EMPLOYEES.items():
         if c == key.lower() or c in emp["aliases"] or c == emp["full_name"].lower():
             return key
-    # partial: unique first-name prefix ("sandh", "nikhil" -> ambiguous with Nikhil Gupta? no, roster only)
-    matches = [k for k in EMPLOYEES if k.lower().startswith(c) or c.startswith(k.lower())]
+    for u in _db_roster():
+        if c == u["name"].lower() or c == u["full_name"].lower():
+            return u["name"]
+    # partial: unique prefix match across the full roster
+    names = roster_names()
+    matches = [k for k in names if k.lower().startswith(c) or c.startswith(k.lower())]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -140,8 +169,8 @@ def extract_mention(text: str) -> str | None:
 
 
 def pick_assignee(category: str, hinted: str | None) -> str:
-    """Final assignment: explicit hint wins, else the category default."""
-    eligible = CATEGORIES.get(category, CATEGORIES[DEFAULT_CATEGORY])
-    if hinted and hinted in EMPLOYEES:
+    """Final assignment: explicit hint wins (any roster member), else the category default."""
+    if hinted and hinted in roster_names():
         return hinted
+    eligible = CATEGORIES.get(category, CATEGORIES[DEFAULT_CATEGORY])
     return eligible[0]

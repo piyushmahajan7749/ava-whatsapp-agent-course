@@ -73,7 +73,7 @@ Return ONLY the JSON object."""
 def extract_task(text: str) -> dict:
     """LLM extraction. Falls back to a safe default TASK on error."""
     prompt = _EXTRACT_PROMPT.format(
-        employees=", ".join(team.EMPLOYEES.keys()),
+        employees=", ".join(team.roster_names()),
         categories=_category_block(),
         default_category=team.DEFAULT_CATEGORY,
         today=datetime.now(IST).strftime("%Y-%m-%d (%A)"),

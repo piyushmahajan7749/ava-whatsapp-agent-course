@@ -178,3 +178,23 @@ def test_session_tokens():
     assert auth.verify_session_token(token + "x") is None
     assert auth.verify_session_token("1.2.3") is None
     assert auth.verify_session_token(None) is None
+
+
+def test_employee_role_flow():
+    emp = db.create_user("Rahul", "Rahul Sharma", "rahul@angcgroup.com", "98260 99999", "secret123")
+    assert emp["role"] == "employee" and emp["phone"] == "919826099999"
+    assert db.check_login("rahul@angcgroup.com", "secret123")
+    assert emp["name"] in [u["name"] for u in db.list_staff()]
+
+    # dynamic roster: mentions/phone/assignment resolve for the new employee
+    assert team.resolve_employee_name("rahul") == "Rahul"
+    assert team.employee_by_phone("919826099999") == "Rahul"
+    assert team.extract_mention("yeh kaam @Rahul ko do") == "Rahul"
+    assert team.pick_assignee("Client Management", "Rahul") == "Rahul"
+
+    task = db.create_task("Rahul", "Staff Task", "Test task", "raw msg")
+    assert task["assignee_name"] == "Rahul"
+
+    # employee edits own task fields
+    updated = db.update_task_fields(task["id"], title="Edited title", due_date="2026-07-20")
+    assert updated["title"] == "Edited title" and updated["due_date"] == "2026-07-20"

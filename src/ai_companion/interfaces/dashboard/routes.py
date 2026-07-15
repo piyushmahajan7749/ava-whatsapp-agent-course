@@ -16,7 +16,7 @@ from ai_companion.interfaces.dashboard.auth import (
     create_session_token,
     current_user,
 )
-from ai_companion.modules.angc import db
+from ai_companion.modules.angc import db, team
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +273,33 @@ button.primary:active { transform: scale(.985); }
   margin-left: auto; background: transparent; color: var(--ink-3); border-color: transparent; padding: 5px 7px;
 }
 .kcard .kacts .b-x:hover { color: #b91c1c; background: #fde8e8; }
+a.b-edit {
+  display: inline-flex; align-items: center; border-radius: 999px; padding: 5px 11px;
+  font-size: 11.5px; font-weight: 700; background: #f3f0e6; color: var(--gold-dark);
+  border: 1px solid #e8e0c8; transition: filter .15s;
+}
+a.b-edit:hover { filter: brightness(.96); }
+select {
+  width: 100%; padding: 11px 13px; border: 1.5px solid #d7dde8; border-radius: 10px;
+  font-size: 14.5px; font-family: inherit; background: #fbfcfe;
+}
+textarea {
+  width: 100%; min-height: 90px; padding: 11px 13px; border: 1.5px solid #d7dde8; border-radius: 10px;
+  font-size: 14.5px; font-family: inherit; background: #fbfcfe; resize: vertical;
+}
+textarea:focus, select:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(212,165,55,.18); }
+.form-box {
+  max-width: 560px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: 24px; box-shadow: var(--shadow-sm);
+}
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+@media (max-width: 560px) { .form-row { grid-template-columns: 1fr; } }
+table.users { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: var(--r-md); overflow: hidden; box-shadow: var(--shadow-sm); }
+table.users th, table.users td { text-align: left; padding: 11px 14px; font-size: 13.5px; border-bottom: 1px solid var(--line); }
+table.users th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); background: var(--bg); }
+.role-pill { border-radius: 999px; padding: 2.5px 10px; font-size: 11.5px; font-weight: 700; }
+.role-admin { background: #f6d98a; color: #6b4e0c; }
+.role-employee { background: #e3edfd; color: #1d4ed8; }
 
 /* ---- misc ---- */
 .empty {
@@ -386,8 +413,9 @@ def _page(title: str, body: str, user: dict | None = None, auth_page: bool = Fal
     nav = ""
     if user:
         home_label = "Dashboard" if user["role"] == "admin" else "My Tasks"
+        team_link = '<a href="/admin/users">Team</a>' if user["role"] == "admin" else ""
         nav = (
-            f'<div class="nav"><a href="/dashboard">{home_label}</a>'
+            f'<div class="nav"><a href="/dashboard">{home_label}</a>{team_link}'
             f'<a href="/password">Password</a><a href="/logout">Logout</a>'
             f'<span class="me">{_avatar(user["name"], "av")}<span>{_esc(user["name"])}</span></span></div>'
         )
@@ -432,6 +460,7 @@ def _kcard(task: dict, show_assignee: bool = False, can_delete: bool = False) ->
             f'onsubmit="return confirm(\'Delete task #{task["id"]}?\')">'
             f'<button class="act b-x" type="submit" title="Delete">✕</button></form>'
         )
+    actions += f'<a class="act b-edit" href="/tasks/{task["id"]}/edit" title="Edit">✎ Edit</a>'
     who = f'<span class="kwho">{_avatar(task["assignee_name"], "av")}{_esc(task["assignee_name"])}</span>' if show_assignee else ""
     due = f'<span class="kdate">📅 {_esc(task["due_date"])}</span>' if task.get("due_date") else ""
     return f"""<div class="kcard" draggable="true" data-id="{task['id']}" data-status="{task['status']}" title="{_esc(task['message'])}">
@@ -589,7 +618,7 @@ def employee_tasks(request: Request, employee_id: int, status: str = ""):
         return RedirectResponse("/dashboard")
 
     employee = db.get_user_by_id(employee_id)
-    if not employee or employee["role"] != "staff":
+    if not employee or employee["role"] == "admin":
         return _page("Not found", _empty("Employee nahi mila."), user)
 
     tasks = db.list_tasks(assignee_id=employee_id)
@@ -633,6 +662,160 @@ def delete_task_route(request: Request, task_id: int):
     db.delete_task(task_id)
     referer = request.headers.get("referer") or "/dashboard"
     return RedirectResponse(referer, status_code=303)
+
+
+def _can_touch(user: dict, task: dict) -> bool:
+    return user["role"] == "admin" or task["assignee_id"] == user["id"]
+
+
+@dashboard_router.get("/tasks/{task_id}/edit", response_class=HTMLResponse)
+def edit_task_page(request: Request, task_id: int, error: str = ""):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    task = db.get_task(task_id)
+    if not task or not _can_touch(user, task):
+        return RedirectResponse("/dashboard")
+
+    cat_options = "".join(
+        f'<option value="{_esc(c)}"{" selected" if c == task["category"] else ""}>{_esc(c)}</option>'
+        for c in team.CATEGORIES
+    )
+    assignee_field = ""
+    if user["role"] == "admin":
+        opts = "".join(
+            f'<option value="{u["id"]}"{" selected" if u["id"] == task["assignee_id"] else ""}>'
+            f'{_esc(u["name"])} ({_esc(u["full_name"])})</option>'
+            for u in db.list_staff()
+        )
+        assignee_field = f"<label>Assignee</label><select name=\"assignee_id\">{opts}</select>"
+    error_html = '<div class="error">Title khaali nahi ho sakta.</div>' if error else ""
+
+    body = f"""<h1>Edit Task #{task['id']}</h1>
+<div class="sub"><a class="backlink" href="/dashboard">← Back</a></div>
+<div class="form-box">
+  <form method="post" action="/tasks/{task['id']}/edit">
+    <label>Title</label><input name="title" required value="{_esc(task['title'])}">
+    <label>Details / message</label><textarea name="message">{_esc(task['message'])}</textarea>
+    <div class="form-row">
+      <div><label>Category</label><select name="category">{cat_options}</select></div>
+      <div><label>Due date (optional)</label><input type="date" name="due_date" value="{_esc(task.get('due_date') or '')}"></div>
+    </div>
+    {assignee_field}
+    {error_html}
+    <button class="primary" type="submit">Save changes</button>
+  </form>
+</div>"""
+    return _page(f"Edit #{task['id']}", body, user)
+
+
+@dashboard_router.post("/tasks/{task_id}/edit")
+def edit_task_submit(
+    request: Request,
+    task_id: int,
+    title: str = Form(...),
+    message: str = Form(""),
+    category: str = Form(...),
+    due_date: str = Form(""),
+    assignee_id: int | None = Form(None),
+):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    task = db.get_task(task_id)
+    if not task or not _can_touch(user, task):
+        return RedirectResponse("/dashboard", status_code=303)
+    if not title.strip():
+        return RedirectResponse(f"/tasks/{task_id}/edit?error=1", status_code=303)
+
+    fields: dict = {
+        "title": title.strip(),
+        "message": message.strip() or task["message"],
+        "due_date": due_date.strip() or None,
+    }
+    if category in team.CATEGORIES:
+        fields["category"] = category
+    # Only the admin can reassign.
+    if user["role"] == "admin" and assignee_id:
+        target = db.get_user_by_id(assignee_id)
+        if target and target["role"] != "admin":
+            fields["assignee_id"] = assignee_id
+    db.update_task_fields(task_id, **fields)
+    return RedirectResponse("/dashboard", status_code=303)
+
+
+@dashboard_router.get("/admin/users", response_class=HTMLResponse)
+def users_page(request: Request, ok: str = "", error: str = ""):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    if user["role"] != "admin":
+        return RedirectResponse("/dashboard")
+
+    rows = ""
+    for u in [user] + db.list_staff():
+        role_cls = "role-admin" if u["role"] == "admin" else "role-employee"
+        role_label = "Admin" if u["role"] == "admin" else "Employee"
+        rows += (
+            f"<tr><td>{_avatar(u['name'], 'av')} </td><td><b>{_esc(u['name'])}</b><br>"
+            f"<span style='color:var(--ink-3);font-size:12px'>{_esc(u['full_name'])}</span></td>"
+            f"<td>{_esc(u['email'])}</td><td>{_esc(u['phone'])}</td>"
+            f"<td><span class='role-pill {role_cls}'>{role_label}</span></td></tr>"
+        )
+
+    note = ""
+    if ok:
+        note = '<div class="ok">Employee add ho gaya ✅ Default password unhe batayein.</div>'
+    elif error == "dup":
+        note = '<div class="error">Is email se user pehle se hai.</div>'
+    elif error:
+        note = '<div class="error">Name, email aur password (min 6) zaroori hain.</div>'
+
+    body = f"""<h1>Team</h1>
+<div class="sub">Dashboard users — employees apne hi tasks dekh aur edit kar sakte hain</div>
+<table class="users">
+  <tr><th></th><th>Name</th><th>Email</th><th>WhatsApp</th><th>Role</th></tr>
+  {rows}
+</table>
+<h2>Add employee</h2>
+<div class="form-box">
+  <form method="post" action="/admin/users">
+    <div class="form-row">
+      <div><label>Short name (for @mentions)</label><input name="name" required placeholder="e.g. Rahul"></div>
+      <div><label>Full name</label><input name="full_name" placeholder="e.g. Rahul Sharma"></div>
+    </div>
+    <div class="form-row">
+      <div><label>Email (login)</label><input type="email" name="email" required></div>
+      <div><label>WhatsApp number (optional)</label><input name="phone" placeholder="98xxxxxxx"></div>
+    </div>
+    <label>Password</label><input name="password" required minlength="6">
+    {note}
+    <button class="primary" type="submit">Add employee</button>
+  </form>
+</div>"""
+    return _page("Team", body, user)
+
+
+@dashboard_router.post("/admin/users")
+def users_create(
+    request: Request,
+    name: str = Form(...),
+    full_name: str = Form(""),
+    email: str = Form(...),
+    phone: str = Form(""),
+    password: str = Form(...),
+):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if user["role"] != "admin":
+        return RedirectResponse("/dashboard", status_code=303)
+    if not name.strip() or not email.strip() or len(password) < 6:
+        return RedirectResponse("/admin/users?error=1", status_code=303)
+    if db.get_user_by_email(email):
+        return RedirectResponse("/admin/users?error=dup", status_code=303)
+    db.create_user(name, full_name, email, phone, password, role="employee")
+    return RedirectResponse("/admin/users?ok=1", status_code=303)
 
 
 @dashboard_router.get("/password", response_class=HTMLResponse)
