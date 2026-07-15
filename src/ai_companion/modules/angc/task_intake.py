@@ -365,7 +365,8 @@ def _answer_query(question: str) -> str:
     for emp in stats["per_employee"]:
         context_lines.append(
             f"- {emp['name']} ({emp['full_name']}): {emp['pending']} pending, "
-            f"{emp['in_progress']} in progress, {emp['done_today']} completed today, {emp['done']} done total"
+            f"{emp['in_progress']} in progress, {emp['in_review']} in review, "
+            f"{emp['done_today']} completed today, {emp['done']} done total"
         )
     context_lines.append("\nOpen tasks (newest first):")
     for t in open_tasks[:25]:
@@ -439,6 +440,7 @@ def _smalltalk_reply(text: str) -> str:
 
 _DONE_RE = re.compile(r"^(?:done|complete[d]?|ho\s*gaya)\s*#?(\d+)", re.IGNORECASE)
 _START_RE = re.compile(r"^(?:start|working|shuru)\s*#?(\d+)", re.IGNORECASE)
+_REVIEW_RE = re.compile(r"^(?:review|check)\s*#?(\d+)", re.IGNORECASE)
 
 
 def handle_staff_message(phone: str, text: str) -> str:
@@ -451,7 +453,7 @@ def handle_staff_message(phone: str, text: str) -> str:
         return ""
     text = (text or "").strip()
 
-    for regex, status, verb in ((_DONE_RE, "done", "complete"), (_START_RE, "in_progress", "start")):
+    for regex, status in ((_DONE_RE, "done"), (_REVIEW_RE, "in_review"), (_START_RE, "in_progress")):
         m = regex.match(text)
         if not m:
             continue
@@ -463,6 +465,9 @@ def handle_staff_message(phone: str, text: str) -> str:
         if status == "done":
             _notify_director(f"✅ {emp_key} ne Task #{task_id} complete kar diya: {task['title']}")
             return f"Shabash! Task #{task_id} complete mark ho gaya ✅"
+        if status == "in_review":
+            _notify_director(f"🔍 {emp_key} ne Task #{task_id} review mein daala hai: {task['title']}")
+            return f"Theek hai, Task #{task_id} review mein daal diya 🔍"
         return f"Theek hai, Task #{task_id} in-progress mark kar diya 👍"
 
     if text.lower() in ("tasks", "task", "mere tasks", "list", "my tasks"):
@@ -471,7 +476,7 @@ def handle_staff_message(phone: str, text: str) -> str:
             return "Aapke saare tasks clear hain 🎉"
         lines = [f"📋 {emp_key} ji, aapke open tasks:"]
         for t in open_tasks[:10]:
-            flag = "🔄" if t["status"] == "in_progress" else "⏳"
+            flag = {"in_progress": "🔄", "in_review": "🔍"}.get(t["status"], "⏳")
             lines.append(f"{flag} #{t['id']} {t['title']} [{t['category']}]")
         lines.append("\nComplete karne par bhejein: done <task number>")
         return "\n".join(lines)
@@ -481,6 +486,7 @@ def handle_staff_message(phone: str, text: str) -> str:
         "Commands:\n"
         "• tasks — apne open tasks dekhein\n"
         "• start <number> — task shuru\n"
+        "• review <number> — review ke liye bhejein\n"
         "• done <number> — task complete"
     )
     if settings.ANGC_DASHBOARD_URL:

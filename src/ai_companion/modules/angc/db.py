@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-TASK_STATUSES = ("pending", "in_progress", "done")
+TASK_STATUSES = ("pending", "in_progress", "in_review", "done")
 
 
 def _db_path() -> str:
@@ -302,6 +302,7 @@ def summary_stats() -> dict:
                     "full_name": staff["full_name"],
                     "pending": counts["pending"],
                     "in_progress": counts["in_progress"],
+                    "in_review": counts["in_review"],
                     "done": counts["done"],
                     "done_today": done_today,
                     "new_today": new_today,

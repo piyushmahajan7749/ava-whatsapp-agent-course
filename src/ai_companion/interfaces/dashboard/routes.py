@@ -8,7 +8,7 @@ import html
 import logging
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from ai_companion.interfaces.dashboard.auth import (
     COOKIE_NAME,
@@ -22,11 +22,20 @@ logger = logging.getLogger(__name__)
 
 dashboard_router = APIRouter()
 
-STATUS_LABELS = {"pending": "Pending", "in_progress": "In Progress", "done": "Done"}
-# Status colors validated (CVD ΔE > 25, contrast ≥ 3:1 on light surface);
-# chips always pair color with a text label + dot, never color alone.
-STATUS_COLORS = {"pending": "#b45309", "in_progress": "#1d4ed8", "done": "#15803d"}
-STATUS_BG = {"pending": "#fef3c7", "in_progress": "#dbeafe", "done": "#dcfce7"}
+STATUS_LABELS = {"pending": "To Do", "in_progress": "In Progress", "in_review": "In Review", "done": "Done"}
+# Status colors validated (CVD-checked, contrast ≥ 3:1 on light surface);
+# chips/columns always pair color with a text label + dot, never color alone.
+STATUS_COLORS = {"pending": "#b45309", "in_progress": "#1d4ed8", "in_review": "#7c3aed", "done": "#15803d"}
+STATUS_BG = {"pending": "#fef3c7", "in_progress": "#dbeafe", "in_review": "#ede9fe", "done": "#dcfce7"}
+STATUS_ACCENT = {"pending": "#f59e0b", "in_progress": "#3b82f6", "in_review": "#8b5cf6", "done": "#22c55e"}
+BOARD_ORDER = ("pending", "in_progress", "in_review", "done")
+# One forward step per status — rendered as a quick-action button (touch fallback for drag & drop).
+NEXT_STEP = {
+    "pending": ("in_progress", "▶ Start"),
+    "in_progress": ("in_review", "🔍 Review"),
+    "in_review": ("done", "✓ Done"),
+    "done": ("pending", "↺ Reopen"),
+}
 
 # Fixed identity colors per employee (never reassigned).
 AVATAR_COLORS = {"Sandhya": "#6d28d9", "Ramu": "#0f766e", "Nikhil Uikey": "#be185d"}
@@ -222,6 +231,49 @@ button.primary:active { transform: scale(.985); }
 .error { background: #fdeaea; color: #b91c1c; border: 1px solid #f6cfcf; }
 .ok { background: #e2f7e9; color: #15803d; border: 1px solid #c3ecd1; }
 
+/* ---- kanban board ---- */
+.board { display: flex; gap: 13px; align-items: flex-start; overflow-x: auto; padding: 2px 2px 14px; -webkit-overflow-scrolling: touch; }
+.col {
+  flex: 1 0 252px; max-width: 330px; background: #e9edf4; border-radius: 14px;
+  padding: 9px; border-top: 3px solid var(--line);
+}
+.col-pending { border-top-color: #f59e0b; }
+.col-in_progress { border-top-color: #3b82f6; }
+.col-in_review { border-top-color: #8b5cf6; }
+.col-done { border-top-color: #22c55e; }
+.col-head { display: flex; align-items: center; gap: 7px; padding: 4px 6px 9px; }
+.col-head .k-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.col-head .cl { font-size: 12.5px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2); }
+.col-head .cn {
+  margin-left: auto; font-size: 11.5px; font-weight: 800; color: var(--ink-2);
+  background: #dde3ec; border-radius: 999px; padding: 2px 9px; font-variant-numeric: tabular-nums;
+}
+.col-body { min-height: 70px; border-radius: 10px; transition: background .15s; }
+.col.dragover { outline: 2px dashed var(--gold); outline-offset: -2px; }
+.col.dragover .col-body { background: rgba(212,165,55,.08); }
+.kcard {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 11px;
+  padding: 11px 12px; margin-bottom: 9px; box-shadow: var(--shadow-sm);
+  cursor: grab; transition: box-shadow .15s, transform .15s, opacity .15s;
+}
+.kcard:hover { box-shadow: var(--shadow-md); }
+.kcard:active { cursor: grabbing; }
+.kcard.dragging { opacity: .45; transform: rotate(2deg); }
+.kcard .kt { font-weight: 700; font-size: 13.5px; line-height: 1.35; }
+.kcard .kt .tid { color: var(--ink-3); font-weight: 700; font-size: 12px; margin-right: 3px; }
+.kcard .kmsg { color: var(--ink-2); font-size: 12px; margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
+.kcard .kmeta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+.kcard .chip { padding: 2.5px 9px; font-size: 10.5px; }
+.kcard .kdate { color: var(--ink-3); font-size: 11px; font-weight: 600; }
+.kcard .kwho { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 11px; font-weight: 700; }
+.kcard .kwho .av { width: 18px; height: 18px; font-size: 8.5px; }
+.kcard .kacts { display: flex; gap: 6px; margin-top: 9px; }
+.kcard .kacts button.act { padding: 5px 11px; font-size: 11.5px; flex: none; }
+.kcard .kacts .b-x {
+  margin-left: auto; background: transparent; color: var(--ink-3); border-color: transparent; padding: 5px 7px;
+}
+.kcard .kacts .b-x:hover { color: #b91c1c; background: #fde8e8; }
+
 /* ---- misc ---- */
 .empty {
   text-align: center; padding: 46px 20px; background: var(--surface);
@@ -259,7 +311,78 @@ def _avatar(name: str, cls: str = "av") -> str:
     return f'<span class="{cls}" style="background:{color}">{_esc(_initials(name))}</span>'
 
 
-def _page(title: str, body: str, user: dict | None = None, auth_page: bool = False) -> HTMLResponse:
+_BOARD_JS = """
+<script>
+(function () {
+  let dragged = null;
+
+  document.querySelectorAll('.kcard[draggable="true"]').forEach(card => {
+    card.addEventListener('dragstart', e => {
+      dragged = card;
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', card.dataset.id);
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      document.querySelectorAll('.col').forEach(c => c.classList.remove('dragover'));
+      dragged = null;
+    });
+  });
+
+  document.querySelectorAll('.col').forEach(col => {
+    col.addEventListener('dragover', e => { e.preventDefault(); col.classList.add('dragover'); });
+    col.addEventListener('dragleave', e => { if (!col.contains(e.relatedTarget)) col.classList.remove('dragover'); });
+    col.addEventListener('drop', e => {
+      e.preventDefault();
+      col.classList.remove('dragover');
+      if (!dragged) return;
+      const status = col.dataset.status;
+      const from = dragged.closest('.col');
+      if (from === col) return;
+      col.querySelector('.col-body').prepend(dragged);
+      updateCard(dragged, status);
+      refreshCounts();
+      fetch('/tasks/' + dragged.dataset.id + '/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'fetch' },
+        body: 'status=' + encodeURIComponent(status),
+      }).then(r => { if (!r.ok) location.reload(); })
+        .catch(() => location.reload());
+    });
+  });
+
+  const NEXT = {
+    pending:     { to: 'in_progress', label: '\\u25B6 Start',  cls: 'b-start' },
+    in_progress: { to: 'in_review',   label: '\\uD83D\\uDD0D Review', cls: 'b-start' },
+    in_review:   { to: 'done',        label: '\\u2713 Done',   cls: 'b-done' },
+    done:        { to: 'pending',     label: '\\u21BA Reopen', cls: 'b-reopen' },
+  };
+
+  function updateCard(card, status) {
+    card.dataset.status = status;
+    const form = card.querySelector('form.next');
+    if (!form) return;
+    const step = NEXT[status];
+    form.querySelector('input[name=status]').value = step.to;
+    const btn = form.querySelector('button');
+    btn.textContent = step.label;
+    btn.className = 'act ' + step.cls;
+  }
+
+  function refreshCounts() {
+    document.querySelectorAll('.col').forEach(col => {
+      const n = col.querySelectorAll('.kcard').length;
+      const badge = col.querySelector('.cn');
+      if (badge) badge.textContent = n;
+    });
+  }
+})();
+</script>
+"""
+
+
+def _page(title: str, body: str, user: dict | None = None, auth_page: bool = False, script: str = "") -> HTMLResponse:
     nav = ""
     if user:
         home_label = "Dashboard" if user["role"] == "admin" else "My Tasks"
@@ -282,68 +405,55 @@ def _page(title: str, body: str, user: dict | None = None, auth_page: bool = Fal
 </head><body{body_cls}>
 {topbar}
 {content}
+{script}
 </body></html>"""
     return HTMLResponse(html_doc)
 
-
-def _status_chip(status: str) -> str:
-    return (
-        f'<span class="chip" style="background:{STATUS_BG[status]};color:{STATUS_COLORS[status]}">'
-        f'<span class="dot"></span>{STATUS_LABELS[status]}</span>'
-    )
 
 
 def _empty(text: str, icon: str = "🗒️") -> str:
     return f'<div class="empty"><div class="big">{icon}</div>{text}</div>'
 
 
-def _task_card(task: dict, can_update: bool, show_assignee: bool = False, can_delete: bool = False) -> str:
-    buttons = ""
-    if can_update:
-        if task["status"] == "pending":
-            buttons += _status_button(task["id"], "in_progress", "▶ Start", "b-start")
-            buttons += _status_button(task["id"], "done", "✓ Mark Done", "b-done")
-        elif task["status"] == "in_progress":
-            buttons += _status_button(task["id"], "done", "✓ Mark Done", "b-done")
-        else:
-            buttons += _status_button(task["id"], "pending", "↺ Reopen", "b-reopen")
+
+
+
+def _kcard(task: dict, show_assignee: bool = False, can_delete: bool = False) -> str:
+    next_status, next_label = NEXT_STEP[task["status"]]
+    next_cls = {"in_progress": "b-start", "in_review": "b-start", "done": "b-done", "pending": "b-reopen"}[next_status]
+    actions = (
+        f'<form class="inline next" method="post" action="/tasks/{task["id"]}/status">'
+        f'<input type="hidden" name="status" value="{next_status}">'
+        f'<button class="act {next_cls}" type="submit">{next_label}</button></form>'
+    )
     if can_delete:
-        buttons += (
+        actions += (
             f'<form class="inline" method="post" action="/tasks/{task["id"]}/delete" '
             f'onsubmit="return confirm(\'Delete task #{task["id"]}?\')">'
-            f'<button class="act b-del" type="submit">✕ Delete</button></form>'
+            f'<button class="act b-x" type="submit" title="Delete">✕</button></form>'
         )
-    buttons_html = f'<div class="btns">{buttons}</div>' if buttons else ""
-
-    assignee_line = f"<span>👤 {_esc(task['assignee_name'])}</span>" if show_assignee else ""
-    due_line = f"<span>📅 Due {_esc(task['due_date'])}</span>" if task.get("due_date") else ""
-    return f"""<div class="task s-{task['status']}">
-  <div class="head">
-    <span class="title"><span class="tid">#{task['id']}</span> {_esc(task['title'])}</span>
-    {_status_chip(task['status'])}
-  </div>
-  <div class="msg">{_esc(task['message'])}</div>
-  <div class="meta"><span class="chip tag">{_esc(task['category'])}</span>
-    <span>🕐 {_esc(db.to_ist_label(task['created_at']))}</span>{assignee_line}{due_line}</div>
-  {buttons_html}
+    who = f'<span class="kwho">{_avatar(task["assignee_name"], "av")}{_esc(task["assignee_name"])}</span>' if show_assignee else ""
+    due = f'<span class="kdate">📅 {_esc(task["due_date"])}</span>' if task.get("due_date") else ""
+    return f"""<div class="kcard" draggable="true" data-id="{task['id']}" data-status="{task['status']}" title="{_esc(task['message'])}">
+  <div class="kt"><span class="tid">#{task['id']}</span>{_esc(task['title'])}</div>
+  <div class="kmsg">{_esc(task['message'])}</div>
+  <div class="kmeta"><span class="chip tag">{_esc(task['category'])}</span>{who}{due}
+    <span class="kdate">🕐 {_esc(db.to_ist_label(task['created_at']).split(',')[0])}</span></div>
+  <div class="kacts">{actions}</div>
 </div>"""
 
 
-def _status_button(task_id: int, status: str, label: str, css: str) -> str:
-    return (
-        f'<form class="inline" method="post" action="/tasks/{task_id}/status">'
-        f'<input type="hidden" name="status" value="{status}">'
-        f'<button class="act {css}" type="submit">{label}</button></form>'
-    )
-
-
-def _filter_bar(base: str, active: str) -> str:
-    links = []
-    for key, label in [("", "All"), ("pending", "Pending"), ("in_progress", "In Progress"), ("done", "Done")]:
-        href = base if not key else f"{base}?status={key}"
-        cls = "on" if key == active else ""
-        links.append(f'<a class="{cls}" href="{href}">{label}</a>')
-    return f'<div class="filters">{"".join(links)}</div>'
+def _kanban(tasks: list[dict], show_assignee: bool = False, can_delete: bool = False) -> str:
+    cols = ""
+    for status in BOARD_ORDER:
+        col_tasks = [t for t in tasks if t["status"] == status]
+        cards = "".join(_kcard(t, show_assignee, can_delete) for t in col_tasks)
+        cols += f"""<div class="col col-{status}" data-status="{status}">
+  <div class="col-head"><span class="k-dot" style="background:{STATUS_ACCENT[status]}"></span>
+    <span class="cl">{STATUS_LABELS[status]}</span><span class="cn">{len(col_tasks)}</span></div>
+  <div class="col-body">{cards}</div>
+</div>"""
+    return f'<div class="board">{cols}</div>'
 
 
 def _kpi_tile(label: str, value: int, dot_color: str) -> str:
@@ -413,14 +523,13 @@ def dashboard(request: Request, status: str = ""):
     if user["role"] == "admin":
         return _admin_dashboard(user)
 
-    tasks = db.list_tasks(assignee_id=user["id"], status=status or None)
-    open_n = sum(1 for t in db.list_tasks(assignee_id=user["id"]) if t["status"] != "done")
-    cards = "".join(_task_card(t, can_update=True) for t in tasks) or _empty("Koi task nahi hai — sab clear! 🎉", "✨")
+    tasks = db.list_tasks(assignee_id=user["id"])
+    open_n = sum(1 for t in tasks if t["status"] != "done")
+    board = _kanban(tasks) if tasks else _empty("Koi task nahi hai — sab clear! 🎉", "✨")
     body = f"""<h1>Namaste, {_esc(user['name'])} ji 🙏</h1>
-<div class="sub">NG Sir dwara assigned — {open_n} open task{'s' if open_n != 1 else ''}</div>
-{_filter_bar('/dashboard', status)}
-{cards}"""
-    return _page("My Tasks", body, user)
+<div class="sub">NG Sir dwara assigned — {open_n} open task{'s' if open_n != 1 else ''} · cards ko drag karke lane badal sakte hain</div>
+{board}"""
+    return _page("My Tasks", body, user, script=_BOARD_JS)
 
 
 def _admin_dashboard(user: dict) -> HTMLResponse:
@@ -429,9 +538,10 @@ def _admin_dashboard(user: dict) -> HTMLResponse:
     done_today_all = sum(e["done_today"] for e in stats["per_employee"])
 
     kpis = (
-        _kpi_tile("Open", totals["pending"] + totals["in_progress"], "#d4a537")
-        + _kpi_tile("Pending", totals["pending"], "#f59e0b")
+        _kpi_tile("Open", totals["pending"] + totals["in_progress"] + totals["in_review"], "#d4a537")
+        + _kpi_tile("To Do", totals["pending"], "#f59e0b")
         + _kpi_tile("In Progress", totals["in_progress"], "#3b82f6")
+        + _kpi_tile("In Review", totals["in_review"], "#8b5cf6")
         + _kpi_tile("Done Today", done_today_all, "#22c55e")
     )
 
@@ -447,25 +557,27 @@ def _admin_dashboard(user: dict) -> HTMLResponse:
   <div class="meter"><div class="bar"><div class="fill" style="width:{pct}%"></div></div>
     <div class="cap">{pct}% completed · {emp['done']} of {emp['total']} total</div></div>
   <div class="stats">
-    <div class="mini"><b>{emp['pending']}</b><span>Pending</span></div>
+    <div class="mini"><b>{emp['pending']}</b><span>To Do</span></div>
     <div class="mini"><b>{emp['in_progress']}</b><span>Active</span></div>
+    <div class="mini"><b>{emp['in_review']}</b><span>Review</span></div>
     <div class="mini"><b>{emp['done_today']}</b><span>Done today</span></div>
-    <div class="mini"><b>{emp['new_today']}</b><span>New today</span></div>
   </div>
 </a>"""
 
-    recent = db.list_tasks(limit=15)
-    recent_html = "".join(
-        _task_card(t, can_update=True, show_assignee=True, can_delete=True) for t in recent
-    ) or _empty("Abhi koi task nahi. WhatsApp par task bhejiye 📲")
+    all_tasks = db.list_tasks(limit=100)
+    board = (
+        _kanban(all_tasks, show_assignee=True, can_delete=True)
+        if all_tasks
+        else _empty("Abhi koi task nahi. WhatsApp par task bhejiye 📲")
+    )
 
     body = f"""<h1>Namaste, Nikhil Gupta Sir 🙏</h1>
-<div class="sub">ANGC team task overview</div>
+<div class="sub">ANGC team task overview · cards ko drag karke lane badal sakte hain</div>
 <div class="kpis">{kpis}</div>
 <div class="cards">{emp_cards}</div>
-<h2>Recent tasks</h2>
-{recent_html}"""
-    return _page("Admin Dashboard", body, user)
+<h2>Task board</h2>
+{board}"""
+    return _page("Admin Dashboard", body, user, script=_BOARD_JS)
 
 
 @dashboard_router.get("/admin/employee/{employee_id}", response_class=HTMLResponse)
@@ -480,18 +592,15 @@ def employee_tasks(request: Request, employee_id: int, status: str = ""):
     if not employee or employee["role"] != "staff":
         return _page("Not found", _empty("Employee nahi mila."), user)
 
-    tasks = db.list_tasks(assignee_id=employee_id, status=status or None)
-    cards = "".join(
-        _task_card(t, can_update=True, can_delete=True) for t in tasks
-    ) or _empty("Koi task nahi hai.")
+    tasks = db.list_tasks(assignee_id=employee_id)
+    board = _kanban(tasks, can_delete=True) if tasks else _empty("Koi task nahi hai.")
     body = f"""<div class="person-head">{_avatar(employee['name'])}
   <div><h1>{_esc(employee['name'])} <span style="color:var(--ink-3);font-weight:600">— {_esc(employee['full_name'])}</span></h1>
   <div class="sub" style="margin:0">{_esc(employee['email'])} · {_esc(employee['phone'])}</div></div>
 </div>
 <div class="sub"><a class="backlink" href="/dashboard">← Back to dashboard</a></div>
-{_filter_bar(f'/admin/employee/{employee_id}', status)}
-{cards}"""
-    return _page(f"{employee['name']} tasks", body, user)
+{board}"""
+    return _page(f"{employee['name']} tasks", body, user, script=_BOARD_JS)
 
 
 @dashboard_router.post("/tasks/{task_id}/status")
@@ -507,6 +616,9 @@ def change_status(request: Request, task_id: int, status: str = Form(...)):
         return RedirectResponse("/dashboard", status_code=303)
     if status in db.TASK_STATUSES:
         db.update_task_status(task_id, status)
+    # Drag & drop updates come via fetch — no redirect needed.
+    if request.headers.get("x-requested-with") == "fetch":
+        return Response(status_code=204)
     referer = request.headers.get("referer") or "/dashboard"
     return RedirectResponse(referer, status_code=303)
 

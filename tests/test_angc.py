@@ -125,7 +125,7 @@ def test_list_and_stats():
     assert len(db.list_tasks(status="pending")) == 1
 
     stats = db.summary_stats()
-    assert stats["totals"] == {"pending": 1, "in_progress": 0, "done": 1}
+    assert stats["totals"] == {"pending": 1, "in_progress": 0, "in_review": 0, "done": 1}
     by_name = {e["name"]: e for e in stats["per_employee"]}
     assert by_name["Sandhya"]["done_today"] == 1
     assert by_name["Ramu"]["pending"] == 1
