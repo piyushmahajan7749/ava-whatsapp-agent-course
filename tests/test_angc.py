@@ -198,3 +198,96 @@ def test_employee_role_flow():
     # employee edits own task fields
     updated = db.update_task_fields(task["id"], title="Edited title", due_date="2026-07-20")
     assert updated["title"] == "Edited title" and updated["due_date"] == "2026-07-20"
+
+
+# ---------------------------------------------------------------------------
+# notes
+# ---------------------------------------------------------------------------
+
+def test_notes_crud():
+    task = db.create_task("Sandhya", "Client Management", "Note test task", "raw")
+    admin = db.get_user_by_email(settings.ANGC_ADMIN_EMAIL)
+    sandhya = db.get_user_by_name("Sandhya")
+
+    n1 = db.add_note(task["id"], admin["id"], "Sir ne bola urgent hai")
+    n2 = db.add_note(task["id"], sandhya["id"], "Kar diya hai, confirm pending")
+    assert n1["author_name"] == "NG Sir" and n2["author_name"] == "Sandhya"
+
+    notes = db.list_notes(task["id"])
+    assert [n["id"] for n in notes] == [n1["id"], n2["id"]]  # chronological
+
+    # task's note_count reflects both, updated_at bumped
+    fetched = db.get_task(task["id"])
+    assert fetched["note_count"] == 2
+    assert fetched["updated_at"] >= task["updated_at"]
+
+    assert db.delete_note(n1["id"]) is True
+    assert len(db.list_notes(task["id"])) == 1
+    assert db.get_task(task["id"])["note_count"] == 1
+    assert db.delete_note(999999) is False
+
+
+def test_notes_cascade_on_task_delete():
+    task = db.create_task("Ramu", "Expenses", "To be deleted", "raw")
+    ramu = db.get_user_by_name("Ramu")
+    db.add_note(task["id"], ramu["id"], "note before delete")
+    assert db.delete_task(task["id"]) is True
+    assert db.list_notes(task["id"]) == []
+
+
+# ---------------------------------------------------------------------------
+# dashboard: new task + notes + overdue (via TestClient)
+# ---------------------------------------------------------------------------
+
+def test_dashboard_new_task_and_notes_and_overdue():
+    from fastapi.testclient import TestClient
+    from ai_companion.interfaces.whatsapp.webhook_endpoint import app
+
+    with TestClient(app) as c:
+        # employee creates a task for themself (no assignee_id control)
+        c.post("/login", data={"email": "cspangcgroup@gmail.com", "password": settings.ANGC_DEFAULT_PASSWORD})
+
+        # GET /tasks/new must render the form, not get shadowed by GET /tasks/{task_id}
+        get_r = c.get("/tasks/new")
+        assert get_r.status_code == 200 and "New Task" in get_r.text and "Create task" in get_r.text
+
+        r = c.post(
+            "/tasks/new",
+            data={"title": "Self-created task", "message": "details", "category": "WhatsApp Message",
+                  "due_date": "2020-01-01"},
+            follow_redirects=True,
+        )
+        assert r.status_code == 200 and "Self-created task" in r.text
+        sandhya = db.get_user_by_name("Sandhya")
+        tasks = db.list_tasks(assignee_id=sandhya["id"])
+        new_task = next(t for t in tasks if t["title"] == "Self-created task")
+        assert new_task["assignee_name"] == "Sandhya"  # can't self-assign to someone else
+        assert new_task["due_date"] == "2020-01-01"
+
+        # overdue task shows a warning marker on the board
+        board_page = c.get("/dashboard").text
+        assert "⚠️" in board_page and "overdue" in board_page
+
+        # add + view a note
+        r2 = c.post(f"/tasks/{new_task['id']}/notes", data={"body": "Reminder set"}, follow_redirects=True)
+        assert "Reminder set" in r2.text and "Notes (1)" in r2.text
+
+        # employee cannot touch another employee's task
+        ramu_task = db.create_task("Ramu", "Expenses", "Ramu only", "raw")
+        r3 = c.post(f"/tasks/{ramu_task['id']}/notes", data={"body": "sneaky"}, follow_redirects=False)
+        assert r3.status_code == 303
+        assert db.list_notes(ramu_task["id"]) == []
+
+    with TestClient(app) as a:
+        # admin can create a task and assign it to anyone
+        a.post("/login", data={"email": settings.ANGC_ADMIN_EMAIL, "password": settings.ANGC_DEFAULT_PASSWORD})
+        ramu = db.get_user_by_name("Ramu")
+        r4 = a.post(
+            "/tasks/new",
+            data={"title": "Admin assigned", "message": "m", "category": "Vehicle Management",
+                  "due_date": "", "assignee_id": str(ramu["id"])},
+            follow_redirects=True,
+        )
+        assert r4.status_code == 200
+        assigned = next(t for t in db.list_tasks(assignee_id=ramu["id"]) if t["title"] == "Admin assigned")
+        assert assigned["assignee_name"] == "Ramu" and assigned["assigned_by"] == "NG Sir"

@@ -115,6 +115,14 @@ def init_db() -> None:
                 completed_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id, status);
+            CREATE TABLE IF NOT EXISTS task_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                author_id INTEGER NOT NULL REFERENCES users(id),
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_notes_task ON task_notes(task_id);
             """
         )
         _seed_users(conn)
@@ -232,10 +240,14 @@ def create_task(
     return task
 
 
+_NOTE_COUNT_SQL = "(SELECT COUNT(*) FROM task_notes n WHERE n.task_id = t.id) AS note_count"
+
+
 def get_task(task_id: int) -> dict | None:
     with _connect() as conn:
         row = conn.execute(
-            "SELECT t.*, u.name AS assignee_name, u.full_name AS assignee_full_name, u.phone AS assignee_phone"
+            f"SELECT t.*, u.name AS assignee_name, u.full_name AS assignee_full_name, u.phone AS assignee_phone,"
+            f" {_NOTE_COUNT_SQL}"
             " FROM tasks t JOIN users u ON u.id = t.assignee_id WHERE t.id=?",
             (task_id,),
         ).fetchone()
@@ -248,7 +260,7 @@ def list_tasks(
     limit: int = 200,
 ) -> list[dict]:
     query = (
-        "SELECT t.*, u.name AS assignee_name, u.full_name AS assignee_full_name"
+        f"SELECT t.*, u.name AS assignee_name, u.full_name AS assignee_full_name, {_NOTE_COUNT_SQL}"
         " FROM tasks t JOIN users u ON u.id = t.assignee_id WHERE 1=1"
     )
     params: list = []
@@ -296,6 +308,40 @@ def update_task_status(task_id: int, status: str) -> dict | None:
             (status, now, completed_at, task_id),
         )
     return get_task(task_id)
+
+
+def add_note(task_id: int, author_id: int, body: str) -> dict:
+    now = _utcnow()
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO task_notes (task_id, author_id, body, created_at) VALUES (?, ?, ?, ?)",
+            (task_id, author_id, body.strip(), now),
+        )
+        note_id = cur.lastrowid
+        conn.execute("UPDATE tasks SET updated_at=? WHERE id=?", (now, task_id))
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT n.*, u.name AS author_name FROM task_notes n"
+            " JOIN users u ON u.id = n.author_id WHERE n.id=?",
+            (note_id,),
+        ).fetchone()
+        return dict(row)
+
+
+def list_notes(task_id: int) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT n.*, u.name AS author_name FROM task_notes n"
+            " JOIN users u ON u.id = n.author_id WHERE n.task_id=? ORDER BY n.id ASC",
+            (task_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_note(note_id: int) -> bool:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM task_notes WHERE id=?", (note_id,))
+        return cur.rowcount > 0
 
 
 def summary_stats() -> dict:

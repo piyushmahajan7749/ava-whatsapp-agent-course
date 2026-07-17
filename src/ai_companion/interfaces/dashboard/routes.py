@@ -6,6 +6,7 @@
 
 import html
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -17,6 +18,7 @@ from ai_companion.interfaces.dashboard.auth import (
     current_user,
 )
 from ai_companion.modules.angc import db, team
+from ai_companion.modules.angc.db import IST
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,18 @@ NEXT_STEP = {
 
 # Fixed identity colors per employee (never reassigned).
 AVATAR_COLORS = {"Sandhya": "#6d28d9", "Ramu": "#0f766e", "Nikhil Uikey": "#be185d"}
+# Deterministic palette for employees added later via the dashboard (hash of name -> stable color).
+_AVATAR_PALETTE = ["#b45309", "#0369a1", "#4d7c0f", "#a21caf", "#0f766e", "#7c2d12", "#4338ca"]
 _AVATAR_FALLBACK = "#334155"
+
+
+def _today_ist_str() -> str:
+    return datetime.now(IST).strftime("%Y-%m-%d")
+
+
+def _is_overdue(task: dict) -> bool:
+    due = task.get("due_date")
+    return bool(due and task["status"] != "done" and due < _today_ist_str())
 
 _BASE_CSS = """
 :root {
@@ -83,6 +96,8 @@ a { color: var(--navy-700); text-decoration: none; }
   padding: 7px 12px; border-radius: 8px; transition: background .15s, color .15s;
 }
 .nav a:hover { background: rgba(255,255,255,.09); color: #fff; }
+.nav a.new-task { background: linear-gradient(135deg, var(--gold-soft), var(--gold) 70%); color: var(--navy-900); }
+.nav a.new-task:hover { background: linear-gradient(135deg, var(--gold-soft), var(--gold) 70%); filter: brightness(1.04); }
 .nav .me {
   display: flex; align-items: center; gap: 8px; margin-left: 10px; padding: 5px 12px 5px 6px;
   background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12); border-radius: 999px;
@@ -259,6 +274,7 @@ button.primary:active { transform: scale(.985); }
 .kcard:hover { box-shadow: var(--shadow-md); }
 .kcard:active { cursor: grabbing; }
 .kcard.dragging { opacity: .45; transform: rotate(2deg); }
+.kcard.overdue { border-left: 3px solid #dc2626; }
 .kcard .kt { font-weight: 700; font-size: 13.5px; line-height: 1.35; }
 .kcard .kt .tid { color: var(--ink-3); font-weight: 700; font-size: 12px; margin-right: 3px; }
 .kcard .kmsg { color: var(--ink-2); font-size: 12px; margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
@@ -319,6 +335,16 @@ table.users th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .
 .d-row b { display: inline-flex; align-items: center; gap: 7px; text-align: right; }
 .d-row .av { width: 22px; height: 22px; font-size: 9.5px; }
 .d-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.notes { display: flex; flex-direction: column; gap: 10px; margin-bottom: 6px; }
+.note { background: var(--bg); border-radius: 10px; padding: 11px 13px; }
+.note-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.note-head .av { width: 22px; height: 22px; font-size: 9.5px; }
+.note-head b { font-size: 13px; }
+.note-head .kdate { margin-left: 2px; }
+.note-head form.inline { margin-left: auto; }
+.note-head .b-x { padding: 3px 7px; font-size: 11px; }
+.note-body { margin-top: 6px; font-size: 13.5px; color: var(--ink-2); white-space: pre-wrap; }
+.note-form textarea { min-height: 70px; }
 
 /* ---- misc ---- */
 .empty {
@@ -352,9 +378,16 @@ def _initials(name: str) -> str:
     return "".join(p[0] for p in parts[:2]).upper() or "?"
 
 
+def _avatar_color(name: str) -> str:
+    if name in AVATAR_COLORS:
+        return AVATAR_COLORS[name]
+    if not name:
+        return _AVATAR_FALLBACK
+    return _AVATAR_PALETTE[sum(ord(c) for c in name) % len(_AVATAR_PALETTE)]
+
+
 def _avatar(name: str, cls: str = "av") -> str:
-    color = AVATAR_COLORS.get(name, _AVATAR_FALLBACK)
-    return f'<span class="{cls}" style="background:{color}">{_esc(_initials(name))}</span>'
+    return f'<span class="{cls}" style="background:{_avatar_color(name)}">{_esc(_initials(name))}</span>'
 
 
 _BOARD_JS = """
@@ -442,7 +475,8 @@ def _page(title: str, body: str, user: dict | None = None, auth_page: bool = Fal
         home_label = "Dashboard" if user["role"] == "admin" else "My Tasks"
         team_link = '<a href="/admin/users">Team</a>' if user["role"] == "admin" else ""
         nav = (
-            f'<div class="nav"><a href="/dashboard">{home_label}</a>{team_link}'
+            f'<div class="nav"><a href="/dashboard">{home_label}</a>'
+            f'<a href="/tasks/new" class="new-task">+ New Task</a>{team_link}'
             f'<a href="/password">Password</a><a href="/logout">Logout</a>'
             f'<span class="me">{_avatar(user["name"], "av")}<span>{_esc(user["name"])}</span></span></div>'
         )
@@ -489,11 +523,15 @@ def _kcard(task: dict, show_assignee: bool = False, can_delete: bool = False) ->
         )
     actions += f'<a class="act b-edit" href="/tasks/{task["id"]}/edit" title="Edit">✎ Edit</a>'
     who = f'<span class="kwho">{_avatar(task["assignee_name"], "av")}{_esc(task["assignee_name"])}</span>' if show_assignee else ""
-    due = f'<span class="kdate">📅 {_esc(task["due_date"])}</span>' if task.get("due_date") else ""
-    return f"""<div class="kcard" draggable="true" data-id="{task['id']}" data-status="{task['status']}" title="Open task #{task['id']}">
+    overdue = _is_overdue(task)
+    due_cls = ' style="color:#b91c1c;font-weight:800"' if overdue else ""
+    due = f'<span class="kdate"{due_cls}>{"⚠️" if overdue else "📅"} {_esc(task["due_date"])}</span>' if task.get("due_date") else ""
+    note_n = task.get("note_count") or 0
+    notes_badge = f'<span class="kdate">💬 {note_n}</span>' if note_n else ""
+    return f"""<div class="kcard{' overdue' if overdue else ''}" draggable="true" data-id="{task['id']}" data-status="{task['status']}" title="Open task #{task['id']}">
   <div class="kt"><span class="tid">#{task['id']}</span><a href="/tasks/{task['id']}" style="color:inherit">{_esc(task['title'])}</a></div>
   <div class="kmsg">{_esc(task['message'])}</div>
-  <div class="kmeta"><span class="chip tag">{_esc(task['category'])}</span>{who}{due}
+  <div class="kmeta"><span class="chip tag">{_esc(task['category'])}</span>{who}{due}{notes_badge}
     <span class="kdate">🕐 {_esc(db.to_ist_label(task['created_at']).split(',')[0])}</span></div>
   <div class="kacts">{actions}</div>
 </div>"""
@@ -695,6 +733,75 @@ def _can_touch(user: dict, task: dict) -> bool:
     return user["role"] == "admin" or task["assignee_id"] == user["id"]
 
 
+@dashboard_router.get("/tasks/new", response_class=HTMLResponse)
+def new_task_page(request: Request, error: str = ""):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+
+    cat_options = "".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in team.CATEGORIES)
+    assignee_field = ""
+    if user["role"] == "admin":
+        opts = "".join(
+            f'<option value="{u["id"]}">{_esc(u["name"])} ({_esc(u["full_name"])})</option>'
+            for u in db.list_staff()
+        )
+        assignee_field = f"<label>Assign to</label><select name=\"assignee_id\">{opts}</select>"
+    else:
+        assignee_field = f"<div class='d-row' style='border:0'><span>👤 Assigned to</span><b>{_avatar(user['name'], 'av')} {_esc(user['name'])} (you)</b></div>"
+    error_html = '<div class="error">Title zaroori hai.</div>' if error else ""
+
+    body = f"""<h1>New Task</h1>
+<div class="sub"><a class="backlink" href="/dashboard">← Back</a></div>
+<div class="form-box">
+  <form method="post" action="/tasks/new">
+    <label>Title</label><input name="title" required placeholder="e.g. Follow up with Ayush bhai on payment" autofocus>
+    <label>Details / message (optional)</label><textarea name="message" placeholder="Any extra context..."></textarea>
+    <div class="form-row">
+      <div><label>Category</label><select name="category">{cat_options}</select></div>
+      <div><label>Due date (optional)</label><input type="date" name="due_date"></div>
+    </div>
+    {assignee_field}
+    {error_html}
+    <button class="primary" type="submit">Create task</button>
+  </form>
+</div>"""
+    return _page("New Task", body, user)
+
+
+@dashboard_router.post("/tasks/new")
+def new_task_submit(
+    request: Request,
+    title: str = Form(...),
+    message: str = Form(""),
+    category: str = Form(...),
+    due_date: str = Form(""),
+    assignee_id: int | None = Form(None),
+):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if not title.strip():
+        return RedirectResponse("/tasks/new?error=1", status_code=303)
+
+    assignee_name = user["name"]
+    if user["role"] == "admin" and assignee_id:
+        target = db.get_user_by_id(assignee_id)
+        if target and target["role"] != "admin":
+            assignee_name = target["name"]
+
+    category = category if category in team.CATEGORIES else team.DEFAULT_CATEGORY
+    task = db.create_task(
+        assignee_name=assignee_name,
+        category=category,
+        title=title.strip(),
+        message=message.strip() or title.strip(),
+        assigned_by=user["name"],
+        due_date=due_date.strip() or None,
+    )
+    return RedirectResponse(f"/tasks/{task['id']}", status_code=303)
+
+
 @dashboard_router.get("/tasks/{task_id}", response_class=HTMLResponse)
 def task_detail(request: Request, task_id: int):
     user = current_user(request)
@@ -727,11 +834,14 @@ def task_detail(request: Request, task_id: int):
             f'<button class="act b-del" type="submit">✕ Delete task</button></form>'
         )
 
-    due_row = f'<div class="d-row"><span>📅 Due date</span><b>{_esc(task["due_date"])}</b></div>' if task.get("due_date") else ""
+    due_row = f'<div class="d-row"><span>{"⚠️" if _is_overdue(task) else "📅"} Due date</span><b{" style=\'color:#b91c1c\'" if _is_overdue(task) else ""}>{_esc(task["due_date"])}</b></div>' if task.get("due_date") else ""
     completed_row = (
         f'<div class="d-row"><span>✅ Completed</span><b>{_esc(db.to_ist_label(task["completed_at"]))}</b></div>'
         if task.get("completed_at") else ""
     )
+
+    notes = db.list_notes(task["id"])
+    notes_html = "".join(_note_item(n, user) for n in notes) or '<div class="empty" style="padding:20px">Abhi koi note nahi hai.</div>'
 
     body = f"""<div class="sub" style="margin-bottom:10px"><a class="backlink" href="/dashboard">← Back to board</a></div>
 <div class="detail">
@@ -755,8 +865,32 @@ def task_detail(request: Request, task_id: int):
     <a class="act b-edit" style="font-size:12.5px;padding:7px 15px" href="/tasks/{task['id']}/edit">✎ Edit task</a>
     {admin_actions}
   </div>
+  <h2>Notes ({len(notes)})</h2>
+  <div class="notes">{notes_html}</div>
+  <form method="post" action="/tasks/{task['id']}/notes" class="note-form">
+    <textarea name="body" placeholder="Add a note or update for this task..." required></textarea>
+    <button class="primary" style="width:auto;margin-top:8px;padding:9px 20px" type="submit">Add note</button>
+  </form>
 </div>"""
     return _page(f"Task #{task['id']}", body, user)
+
+
+def _note_item(note: dict, user: dict) -> str:
+    can_delete = user["role"] == "admin" or note["author_id"] == user["id"]
+    del_btn = (
+        f'<form class="inline" method="post" action="/tasks/{note["task_id"]}/notes/{note["id"]}/delete" '
+        f'onsubmit="return confirm(\'Delete this note?\')">'
+        f'<button class="act b-x" type="submit" title="Delete note">✕</button></form>'
+        if can_delete else ""
+    )
+    return f"""<div class="note">
+  <div class="note-head">{_avatar(note['author_name'], 'av')}
+    <b>{_esc(note['author_name'])}</b>
+    <span class="kdate">{_esc(db.to_ist_label(note['created_at']))}</span>
+    {del_btn}
+  </div>
+  <div class="note-body">{_esc(note['body'])}</div>
+</div>"""
 
 
 def _status_chip_lg(status: str) -> str:
@@ -764,6 +898,34 @@ def _status_chip_lg(status: str) -> str:
         f'<span class="chip" style="background:{STATUS_BG[status]};color:{STATUS_COLORS[status]};'
         f'padding:7px 15px;font-size:13px;flex:none"><span class="dot"></span>{STATUS_LABELS[status]}</span>'
     )
+
+
+@dashboard_router.post("/tasks/{task_id}/notes")
+def add_note_route(request: Request, task_id: int, body: str = Form(...)):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    task = db.get_task(task_id)
+    if not task or not _can_touch(user, task):
+        return RedirectResponse("/dashboard", status_code=303)
+    if body.strip():
+        db.add_note(task_id, user["id"], body.strip())
+    return RedirectResponse(f"/tasks/{task_id}", status_code=303)
+
+
+@dashboard_router.post("/tasks/{task_id}/notes/{note_id}/delete")
+def delete_note_route(request: Request, task_id: int, note_id: int):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    task = db.get_task(task_id)
+    if not task or not _can_touch(user, task):
+        return RedirectResponse("/dashboard", status_code=303)
+    notes = db.list_notes(task_id)
+    note = next((n for n in notes if n["id"] == note_id), None)
+    if note and (user["role"] == "admin" or note["author_id"] == user["id"]):
+        db.delete_note(note_id)
+    return RedirectResponse(f"/tasks/{task_id}", status_code=303)
 
 
 @dashboard_router.get("/tasks/{task_id}/edit", response_class=HTMLResponse)
