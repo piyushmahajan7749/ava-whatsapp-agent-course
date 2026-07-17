@@ -321,6 +321,26 @@ table.users th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .
 .role-admin { background: #f6d98a; color: #6b4e0c; }
 .role-employee { background: #e3edfd; color: #1d4ed8; }
 
+/* ---- analytics ---- */
+table.analytics th, table.analytics td { text-align: left; padding: 10px 12px; font-size: 13px; white-space: nowrap; }
+table.analytics td { font-variant-numeric: tabular-nums; }
+table.analytics td:first-child { white-space: nowrap; }
+table.analytics .av { width: 22px; height: 22px; font-size: 9.5px; vertical-align: middle; margin-right: 4px; }
+.prog { display: flex; align-items: center; gap: 8px; min-width: 130px; }
+.prog-bar { flex: 1; height: 7px; background: #e9edf4; border-radius: 99px; overflow: hidden; }
+.prog-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--gold-soft), var(--gold)); }
+.prog span { font-size: 12px; font-weight: 700; color: var(--ink-2); }
+.trend { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 18px; box-shadow: var(--shadow-sm); }
+.tlegend { display: flex; gap: 16px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 12px; }
+.tlegend .sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
+.sw-created { background: var(--gold); } .sw-done { background: #22c55e; }
+.tchart { display: flex; gap: 6px; align-items: flex-end; height: 160px; }
+.tcol { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; }
+.tbars { flex: 1; display: flex; align-items: flex-end; gap: 3px; width: 100%; justify-content: center; }
+.tbar { width: 40%; max-width: 14px; border-radius: 3px 3px 0 0; min-height: 2px; }
+.tb-created { background: var(--gold); } .tb-done { background: #22c55e; }
+.tlabel { font-size: 10px; color: var(--ink-3); margin-top: 6px; font-weight: 600; }
+
 /* ---- task detail ---- */
 .detail {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
@@ -477,10 +497,13 @@ def _page(title: str, body: str, user: dict | None = None, auth_page: bool = Fal
     nav = ""
     if user:
         home_label = "Dashboard" if user["role"] == "admin" else "My Tasks"
-        team_link = '<a href="/admin/users">Team</a>' if user["role"] == "admin" else ""
+        admin_links = (
+            '<a href="/admin/analytics">Analytics</a><a href="/admin/users">Team</a>'
+            if user["role"] == "admin" else ""
+        )
         nav = (
             f'<div class="nav"><a href="/dashboard">{home_label}</a>'
-            f'<a href="/tasks/new" class="new-task">+ New Task</a>{team_link}'
+            f'<a href="/tasks/new" class="new-task">+ New Task</a>{admin_links}'
             f'<a href="/calendar">Calendar</a>'
             f'<a href="/password">Password</a><a href="/logout">Logout</a>'
             f'<span class="me">{_avatar(user["name"], "av")}<span>{_esc(user["name"])}</span></span></div>'
@@ -682,6 +705,79 @@ def _admin_dashboard(user: dict) -> HTMLResponse:
 <h2>Task board</h2>
 {board}"""
     return _page("Admin Dashboard", body, user, script=_BOARD_JS)
+
+
+def _pct(x: float | None) -> str:
+    return "—" if x is None else f"{round(x * 100)}%"
+
+
+@dashboard_router.get("/admin/analytics", response_class=HTMLResponse)
+def analytics_page(request: Request):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    if user["role"] != "admin":
+        return RedirectResponse("/dashboard")
+
+    a = db.analytics_stats()
+    team = a["team"]
+
+    kpis = (
+        _kpi_tile("Total tasks", team["total"], "#d4a537")
+        + _kpi_tile("Completed", team["done"], "#22c55e")
+        + _kpi_tile("Completion rate", _pct(team["completion_rate"]), "#3b82f6")
+        + _kpi_tile("Avg turnaround", team["avg_turnaround_label"], "#8b5cf6")
+        + _kpi_tile("Overdue now", team["overdue_now"], "#dc2626")
+    )
+
+    # Per-employee performance table with inline completion bars.
+    rows = ""
+    for e in a["per_employee"]:
+        rows += f"""<tr>
+  <td>{_avatar(e['name'], 'av')} <b>{_esc(e['name'])}</b></td>
+  <td>{e['total']}</td>
+  <td>{e['done']}</td>
+  <td><div class="prog"><div class="prog-bar"><div class="prog-fill" style="width:{round(e['completion_rate']*100)}%"></div></div>
+    <span>{_pct(e['completion_rate'])}</span></div></td>
+  <td>{e['avg_turnaround_label']}</td>
+  <td>{_pct(e['on_time_rate'])}</td>
+  <td>{e['open']}</td>
+  <td>{('<b style="color:#b91c1c">'+str(e['overdue_now'])+'</b>') if e['overdue_now'] else '0'}</td>
+  <td>{e['avg_open_age_label']}</td>
+</tr>"""
+
+    # 14-day created-vs-completed trend as twin CSS bars.
+    max_v = max([max(d["created"], d["completed"]) for d in a["trend"]] + [1])
+    bars = ""
+    for d in a["trend"]:
+        ch = round(d["created"] / max_v * 100)
+        dh = round(d["completed"] / max_v * 100)
+        bars += f"""<div class="tcol" title="{d['label']}: {d['created']} created, {d['completed']} done">
+  <div class="tbars">
+    <div class="tbar tb-created" style="height:{ch}%"></div>
+    <div class="tbar tb-done" style="height:{dh}%"></div>
+  </div>
+  <div class="tlabel">{d['label'].split(' ')[0]}</div>
+</div>"""
+
+    body = f"""<h1>Team Analytics</h1>
+<div class="sub">Performance overview · <a class="backlink" href="/dashboard">← back to board</a></div>
+<div class="kpis">{kpis}</div>
+
+<h2>Per-assistant performance</h2>
+<div style="overflow-x:auto">
+<table class="users analytics">
+  <tr><th>Assistant</th><th>Assigned</th><th>Done</th><th>Completion</th><th>Avg turnaround</th><th>On-time</th><th>Open</th><th>Overdue</th><th>Avg open age</th></tr>
+  {rows}
+</table>
+</div>
+
+<h2>Last 14 days — created vs completed</h2>
+<div class="trend">
+  <div class="tlegend"><span><i class="sw sw-created"></i> Created</span><span><i class="sw sw-done"></i> Completed</span></div>
+  <div class="tchart">{bars}</div>
+</div>"""
+    return _page("Analytics", body, user)
 
 
 @dashboard_router.get("/admin/employee/{employee_id}", response_class=HTMLResponse)

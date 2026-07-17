@@ -426,6 +426,46 @@ def test_ics_urgent_priority():
     assert "🔴" in out and "PRIORITY:1" in out
 
 
+def test_analytics_stats():
+    sandhya = db.get_user_by_name("Sandhya")
+    # 2 assigned, 1 done on time, 1 open + overdue
+    t1 = db.create_task("Sandhya", "Client Management", "done ontime", "m", due_date="2999-01-01")
+    db.update_task_status(t1["id"], "done")
+    db.create_task("Sandhya", "Expenses", "open overdue", "m", due_date="2000-01-01")
+
+    a = db.analytics_stats()
+    by = {e["name"]: e for e in a["per_employee"]}
+    s = by["Sandhya"]
+    assert s["total"] == 2 and s["done"] == 1 and s["open"] == 1
+    assert s["completion_rate"] == 0.5
+    assert s["on_time_rate"] == 1.0  # the one done task beat its (far-future) due date
+    assert s["overdue_now"] == 1
+    assert s["avg_turnaround_h"] is not None  # created & completed both set
+
+    assert a["team"]["total"] >= 2
+    assert len(a["trend"]) == 14
+    # today's bucket should reflect the task we just created
+    assert a["trend"][-1]["created"] >= 2
+
+    # empty employee has safe zeros, not crashes
+    uikey = by["Nikhil Uikey"]
+    assert uikey["completion_rate"] == 0.0 and uikey["avg_turnaround_label"] == "—"
+
+
+def test_analytics_page_rbac():
+    from fastapi.testclient import TestClient
+    from ai_companion.interfaces.whatsapp.webhook_endpoint import app
+
+    with TestClient(app) as c:
+        c.post("/login", data={"email": settings.ANGC_ADMIN_EMAIL, "password": settings.ANGC_DEFAULT_PASSWORD})
+        r = c.get("/admin/analytics")
+        assert r.status_code == 200 and "Team Analytics" in r.text and "Completion rate" in r.text
+    with TestClient(app) as e:
+        e.post("/login", data={"email": "cspangcgroup@gmail.com", "password": settings.ANGC_DEFAULT_PASSWORD})
+        r = e.get("/admin/analytics", follow_redirects=False)
+        assert r.status_code in (303, 307)
+
+
 def test_calendar_feed_url_uses_https_behind_proxy(monkeypatch):
     """Azure Container Apps terminates TLS and proxies over http — the feed URL
     we show must still be https:// or calendar apps refuse to subscribe."""

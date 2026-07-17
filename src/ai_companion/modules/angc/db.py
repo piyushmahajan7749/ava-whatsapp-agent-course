@@ -442,3 +442,111 @@ def summary_stats() -> dict:
         for row in conn.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"):
             totals[row["status"]] = row["n"]
         return {"per_employee": per_employee, "totals": totals}
+
+
+def _parse_utc(iso: str | None):
+    if not iso:
+        return None
+    try:
+        return datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _fmt_duration(hours: float | None) -> str:
+    if hours is None:
+        return "—"
+    if hours < 1:
+        return f"{int(round(hours * 60))}m"
+    if hours < 48:
+        return f"{hours:.1f}h"
+    return f"{hours / 24:.1f}d"
+
+
+def analytics_stats() -> dict:
+    """Performance metrics per employee + a created-vs-completed daily trend.
+
+    - completion_rate: done / total assigned
+    - avg_turnaround_h: mean (completed_at - created_at) over done tasks, hours
+    - on_time_rate: among done tasks that HAD a due date, fraction finished on/before it
+    - overdue_now: open tasks past due
+    - avg_open_age_h: mean age of currently-open tasks, hours
+    """
+    now = datetime.now(timezone.utc)
+    today_ist = datetime.now(IST).date()
+    with _connect() as conn:
+        per_employee = []
+        for staff in conn.execute("SELECT * FROM users WHERE role != 'admin' ORDER BY id").fetchall():
+            rows = [dict(r) for r in conn.execute("SELECT * FROM tasks WHERE assignee_id=?", (staff["id"],))]
+            total = len(rows)
+            done = [r for r in rows if r["status"] == "done"]
+            open_rows = [r for r in rows if r["status"] != "done"]
+
+            turnarounds = []
+            for r in done:
+                c, d = _parse_utc(r["created_at"]), _parse_utc(r["completed_at"])
+                if c and d and d >= c:
+                    turnarounds.append((d - c).total_seconds() / 3600)
+            avg_turnaround = sum(turnarounds) / len(turnarounds) if turnarounds else None
+
+            with_due = [r for r in done if r.get("due_date") and r.get("completed_at")]
+            on_time = 0
+            for r in with_due:
+                comp = _parse_utc(r["completed_at"])
+                comp_ist = comp.astimezone(IST).date() if comp else None
+                if comp_ist and str(comp_ist) <= r["due_date"]:
+                    on_time += 1
+            on_time_rate = (on_time / len(with_due)) if with_due else None
+
+            overdue_now = sum(
+                1 for r in open_rows if r.get("due_date") and r["due_date"] < str(today_ist)
+            )
+            open_ages = [
+                (now - _parse_utc(r["created_at"])).total_seconds() / 3600
+                for r in open_rows if _parse_utc(r["created_at"])
+            ]
+            avg_open_age = sum(open_ages) / len(open_ages) if open_ages else None
+
+            per_employee.append({
+                "id": staff["id"],
+                "name": staff["name"],
+                "full_name": staff["full_name"],
+                "total": total,
+                "done": len(done),
+                "open": len(open_rows),
+                "completion_rate": (len(done) / total) if total else 0.0,
+                "avg_turnaround_h": avg_turnaround,
+                "avg_turnaround_label": _fmt_duration(avg_turnaround),
+                "on_time_rate": on_time_rate,
+                "overdue_now": overdue_now,
+                "avg_open_age_h": avg_open_age,
+                "avg_open_age_label": _fmt_duration(avg_open_age),
+            })
+
+        # 14-day created-vs-completed trend (IST days).
+        trend = []
+        for i in range(13, -1, -1):
+            day = today_ist - timedelta(days=i)
+            start_utc = datetime(day.year, day.month, day.day, tzinfo=IST).astimezone(timezone.utc)
+            end_utc = start_utc + timedelta(days=1)
+            s, e = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), end_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            created = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE created_at>=? AND created_at<?", (s, e)
+            ).fetchone()[0]
+            completed = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE completed_at>=? AND completed_at<?", (s, e)
+            ).fetchone()[0]
+            trend.append({"date": str(day), "label": day.strftime("%d %b"), "created": created, "completed": completed})
+
+        team = {
+            "total": sum(e["total"] for e in per_employee),
+            "done": sum(e["done"] for e in per_employee),
+            "open": sum(e["open"] for e in per_employee),
+            "overdue_now": sum(e["overdue_now"] for e in per_employee),
+        }
+        team["completion_rate"] = (team["done"] / team["total"]) if team["total"] else 0.0
+        all_turnarounds = [e["avg_turnaround_h"] for e in per_employee if e["avg_turnaround_h"] is not None]
+        team["avg_turnaround_label"] = _fmt_duration(
+            sum(all_turnarounds) / len(all_turnarounds) if all_turnarounds else None
+        )
+        return {"per_employee": per_employee, "team": team, "trend": trend}
