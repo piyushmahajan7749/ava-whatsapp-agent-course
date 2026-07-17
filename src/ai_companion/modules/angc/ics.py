@@ -68,11 +68,14 @@ def build_ics(tasks: list[dict], calendar_name: str, feed_uid_domain: str = "ang
         status = t.get("status", "pending")
         overdue = due < today and status != "done"
         emoji = "⚠️" if overdue else _STATUS_EMOJI.get(status, "")
+        urgent = t.get("priority") == "urgent" and status != "done"
+        prio_tag = "🔴 " if urgent else ""
         assignee = f" — {t['assignee_name']}" if t.get("assignee_name") else ""
-        summary = f"{emoji} {t['title']}{assignee}".strip()
+        summary = f"{prio_tag}{emoji} {t['title']}{assignee}".strip()
 
         desc_bits = [
             f"Status: {_STATUS_LABEL.get(status, status)}",
+            f"Priority: {'Urgent' if t.get('priority') == 'urgent' else 'Normal'}",
             f"Category: {t.get('category', '')}",
         ]
         if t.get("assignee_name"):
@@ -92,6 +95,8 @@ def build_ics(tasks: list[dict], calendar_name: str, feed_uid_domain: str = "ang
             f"SUMMARY:{_escape(summary)}",
             f"DESCRIPTION:{description}",
             f"CATEGORIES:{_escape(t.get('category', ''))}",
+            # iCalendar PRIORITY: 1 = highest, 5 = normal. Calendar apps use this.
+            f"PRIORITY:{1 if urgent else 5}",
             "STATUS:CONFIRMED",
             f"LAST-MODIFIED:{now_stamp}",
             "END:VEVENT",

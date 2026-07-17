@@ -277,6 +277,8 @@ button.primary:active { transform: scale(.985); }
 .kcard:active { cursor: grabbing; }
 .kcard.dragging { opacity: .45; transform: rotate(2deg); }
 .kcard.overdue { border-left: 3px solid #dc2626; }
+.kcard.urgent { border-left: 3px solid #dc2626; box-shadow: 0 0 0 1px #fecaca, var(--shadow-sm); }
+.chip.prio-urgent { background: #fee2e2; color: #b91c1c; }
 .kcard .kt { font-weight: 700; font-size: 13.5px; line-height: 1.35; }
 .kcard .kt .tid { color: var(--ink-3); font-weight: 700; font-size: 12px; margin-right: 3px; }
 .kcard .kmsg { color: var(--ink-2); font-size: 12px; margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
@@ -531,8 +533,11 @@ def _kcard(task: dict, show_assignee: bool = False, can_delete: bool = False) ->
     due = f'<span class="kdate"{due_cls}>{"⚠️" if overdue else "📅"} {_esc(task["due_date"])}</span>' if task.get("due_date") else ""
     note_n = task.get("note_count") or 0
     notes_badge = f'<span class="kdate">💬 {note_n}</span>' if note_n else ""
-    return f"""<div class="kcard{' overdue' if overdue else ''}" draggable="true" data-id="{task['id']}" data-status="{task['status']}" title="Open task #{task['id']}">
+    urgent = task.get("priority") == "urgent"
+    urgent_badge = '<span class="chip prio-urgent">🔴 Urgent</span>' if urgent else ""
+    return f"""<div class="kcard{' overdue' if overdue else ''}{' urgent' if urgent else ''}" draggable="true" data-id="{task['id']}" data-status="{task['status']}" title="Open task #{task['id']}">
   <div class="kt"><span class="tid">#{task['id']}</span><a href="/tasks/{task['id']}" style="color:inherit">{_esc(task['title'])}</a></div>
+  {('<div class="kmeta" style="margin-top:6px">' + urgent_badge + '</div>') if urgent else ''}
   <div class="kmsg">{_esc(task['message'])}</div>
   <div class="kmeta"><span class="chip tag">{_esc(task['category'])}</span>{who}{due}{notes_badge}
     <span class="kdate">🕐 {_esc(db.to_ist_label(task['created_at']).split(',')[0])}</span></div>
@@ -544,6 +549,8 @@ def _kanban(tasks: list[dict], show_assignee: bool = False, can_delete: bool = F
     cols = ""
     for status in BOARD_ORDER:
         col_tasks = [t for t in tasks if t["status"] == status]
+        # Within a lane, float urgent (then overdue) tasks to the top.
+        col_tasks.sort(key=lambda t: (t.get("priority") != "urgent", not _is_overdue(t)))
         cards = "".join(_kcard(t, show_assignee, can_delete) for t in col_tasks)
         cols += f"""<div class="col col-{status}" data-status="{status}">
   <div class="col-head"><span class="k-dot" style="background:{STATUS_ACCENT[status]}"></span>
@@ -764,6 +771,10 @@ def new_task_page(request: Request, error: str = ""):
       <div><label>Category</label><select name="category">{cat_options}</select></div>
       <div><label>Due date (optional)</label><input type="date" name="due_date"></div>
     </div>
+    <div class="form-row">
+      <div><label>Priority</label><select name="priority"><option value="normal">Normal</option><option value="urgent">🔴 Urgent</option></select></div>
+      <div></div>
+    </div>
     {assignee_field}
     {error_html}
     <button class="primary" type="submit">Create task</button>
@@ -779,6 +790,7 @@ def new_task_submit(
     message: str = Form(""),
     category: str = Form(...),
     due_date: str = Form(""),
+    priority: str = Form("normal"),
     assignee_id: int | None = Form(None),
 ):
     user = current_user(request)
@@ -801,6 +813,7 @@ def new_task_submit(
         message=message.strip() or title.strip(),
         assigned_by=user["name"],
         due_date=due_date.strip() or None,
+        priority=priority if priority in db.TASK_PRIORITIES else "normal",
     )
     return RedirectResponse(f"/tasks/{task['id']}", status_code=303)
 
@@ -850,12 +863,13 @@ def task_detail(request: Request, task_id: int):
 <div class="detail">
   <div class="d-head">
     <h1><span class="tid" style="color:var(--ink-3)">#{task['id']}</span> {_esc(task['title'])}</h1>
-    {_status_chip_lg(task['status'])}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">{'<span class="chip prio-urgent" style="padding:7px 13px">🔴 Urgent</span>' if task.get('priority') == 'urgent' else ''}{_status_chip_lg(task['status'])}</div>
   </div>
   <div class="d-msg">{_esc(task['message'])}</div>
   <div class="d-grid">
     <div class="d-row"><span>👤 Assigned to</span><b>{_avatar(task['assignee_name'], 'av')} {_esc(task['assignee_name'])} ({_esc(task['assignee_full_name'])})</b></div>
     <div class="d-row"><span>🏷️ Category</span><b><span class="chip tag">{_esc(task['category'])}</span></b></div>
+    <div class="d-row"><span>🚩 Priority</span><b>{'🔴 Urgent' if task.get('priority') == 'urgent' else 'Normal'}</b></div>
     <div class="d-row"><span>👔 Assigned by</span><b>{_esc(task['assigned_by'])}</b></div>
     <div class="d-row"><span>🕐 Created</span><b>{_esc(db.to_ist_label(task['created_at']))}</b></div>
     <div class="d-row"><span>♻️ Updated</span><b>{_esc(db.to_ist_label(task['updated_at']))}</b></div>
@@ -952,6 +966,11 @@ def edit_task_page(request: Request, task_id: int, error: str = ""):
             for u in db.list_staff()
         )
         assignee_field = f"<label>Assignee</label><select name=\"assignee_id\">{opts}</select>"
+    is_urgent = task.get("priority") == "urgent"
+    prio_options = (
+        f'<option value="normal"{"" if is_urgent else " selected"}>Normal</option>'
+        f'<option value="urgent"{" selected" if is_urgent else ""}>🔴 Urgent</option>'
+    )
     error_html = '<div class="error">Title khaali nahi ho sakta.</div>' if error else ""
 
     body = f"""<h1>Edit Task #{task['id']}</h1>
@@ -963,6 +982,10 @@ def edit_task_page(request: Request, task_id: int, error: str = ""):
     <div class="form-row">
       <div><label>Category</label><select name="category">{cat_options}</select></div>
       <div><label>Due date (optional)</label><input type="date" name="due_date" value="{_esc(task.get('due_date') or '')}"></div>
+    </div>
+    <div class="form-row">
+      <div><label>Priority</label><select name="priority">{prio_options}</select></div>
+      <div></div>
     </div>
     {assignee_field}
     {error_html}
@@ -980,6 +1003,7 @@ def edit_task_submit(
     message: str = Form(""),
     category: str = Form(...),
     due_date: str = Form(""),
+    priority: str = Form("normal"),
     assignee_id: int | None = Form(None),
 ):
     user = current_user(request)
@@ -995,6 +1019,7 @@ def edit_task_submit(
         "title": title.strip(),
         "message": message.strip() or task["message"],
         "due_date": due_date.strip() or None,
+        "priority": priority if priority in db.TASK_PRIORITIES else "normal",
     }
     if category in team.CATEGORIES:
         fields["category"] = category

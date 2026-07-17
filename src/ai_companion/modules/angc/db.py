@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 TASK_STATUSES = ("pending", "in_progress", "in_review", "done")
+TASK_PRIORITIES = ("normal", "urgent")
 
 
 def _db_path() -> str:
@@ -126,6 +127,7 @@ def init_db() -> None:
             """
         )
         _migrate_calendar_token(conn)
+        _migrate_task_priority(conn)
         _seed_users(conn)
 
 
@@ -137,6 +139,14 @@ def _migrate_calendar_token(conn: sqlite3.Connection) -> None:
     if "calendar_token" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN calendar_token TEXT")
         logger.info("[angc.db] migrated: added users.calendar_token")
+
+
+def _migrate_task_priority(conn: sqlite3.Connection) -> None:
+    """Add tasks.priority ('normal'|'urgent') for DBs predating priorities."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if "priority" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
+        logger.info("[angc.db] migrated: added tasks.priority")
 
 
 def _seed_users(conn: sqlite3.Connection) -> None:
@@ -265,16 +275,19 @@ def create_task(
     message: str,
     assigned_by: str = "NG Sir",
     due_date: str | None = None,
+    priority: str = "normal",
 ) -> dict:
     assignee = get_user_by_name(assignee_name)
     if not assignee:
         raise ValueError(f"Unknown assignee: {assignee_name}")
+    if priority not in TASK_PRIORITIES:
+        priority = "normal"
     now = _utcnow()
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO tasks (assignee_id, category, title, message, status, assigned_by, due_date, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
-            (assignee["id"], category, title, message, assigned_by, due_date, now, now),
+            "INSERT INTO tasks (assignee_id, category, title, message, status, assigned_by, due_date, priority, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+            (assignee["id"], category, title, message, assigned_by, due_date, priority, now, now),
         )
         task_id = cur.lastrowid
     task = get_task(task_id)
@@ -318,12 +331,14 @@ def list_tasks(
         return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
-_EDITABLE_FIELDS = {"title", "message", "category", "assignee_id", "due_date"}
+_EDITABLE_FIELDS = {"title", "message", "category", "assignee_id", "due_date", "priority"}
 
 
 def update_task_fields(task_id: int, **fields) -> dict | None:
-    """Update task fields (title/message/category/assignee_id/due_date)."""
+    """Update task fields (title/message/category/assignee_id/due_date/priority)."""
     updates = {k: v for k, v in fields.items() if k in _EDITABLE_FIELDS}
+    if "priority" in updates and updates["priority"] not in TASK_PRIORITIES:
+        del updates["priority"]
     if not updates:
         return get_task(task_id)
     updates["updated_at"] = _utcnow()

@@ -332,8 +332,10 @@ def test_ics_build_basic_and_escaping():
     assert "BEGIN:VEVENT" in out and out.count("BEGIN:VEVENT") == 1  # undated task skipped
     assert "UID:task-1@" in out
     assert "DTSTART;VALUE=DATE:20260720" in out
-    assert "Call\\, Ayush\\; re: payment\\nfollow-up" in out
-    assert "a comma\\, and a backslash \\\\ here" in out
+    # Unfold RFC 5545 line folds (CRLF + space) before checking content substrings.
+    unfolded = out.replace("\r\n ", "")
+    assert "Call\\, Ayush\\; re: payment\\nfollow-up" in unfolded
+    assert "a comma\\, and a backslash \\\\ here" in unfolded
     assert "X-WR-CALNAME:Test Calendar" in out
 
 
@@ -346,6 +348,82 @@ def test_ics_overdue_marker():
     }]
     out = ics.build_ics(tasks, "Test")
     assert "⚠️" in out
+
+
+# ---------------------------------------------------------------------------
+# priority + due-date inference + proof-of-completion
+# ---------------------------------------------------------------------------
+
+def test_priority_field_create_edit_and_migration():
+    task = db.create_task("Sandhya", "Client Management", "Prio task", "raw", priority="urgent")
+    assert task["priority"] == "urgent"
+    assert db.create_task("Ramu", "Expenses", "Normal task", "raw")["priority"] == "normal"
+    # invalid priority coerces to normal
+    assert db.create_task("Ramu", "Expenses", "Bad prio", "raw", priority="wtf")["priority"] == "normal"
+
+    updated = db.update_task_fields(task["id"], priority="normal")
+    assert updated["priority"] == "normal"
+    # invalid priority via edit is ignored, not written
+    kept = db.update_task_fields(task["id"], priority="bogus")
+    assert kept["priority"] == "normal"
+
+
+def test_urgency_detection_and_due_inference(monkeypatch):
+    from ai_companion.modules.angc import task_intake
+
+    # deterministic backstop upgrades to urgent even if LLM omits it
+    monkeypatch.setattr(task_intake, "extract_task", lambda text: {
+        "intent": "TASK", "task_id": None, "title": "Ayush payment",
+        "category": "Financial Management", "assignee": "Sandhya",
+        "due_date": None, "priority": "urgent",
+    })
+    # avoid real WhatsApp + director notify
+    monkeypatch.setattr(task_intake, "_notify_assignee", lambda task: False)
+
+    reply = task_intake.handle_director_message("Ayush se payment urgent collect karo @Sandhya")
+    assert "URGENT" in reply
+    # urgent + no explicit date => due today (IST)
+    from ai_companion.modules.angc.db import IST
+    from datetime import datetime
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    sandhya = db.get_user_by_name("Sandhya")
+    latest = db.list_tasks(assignee_id=sandhya["id"])[0]
+    assert latest["priority"] == "urgent" and latest["due_date"] == today
+
+
+def test_urgent_regex_backstop():
+    from ai_companion.modules.angc.task_intake import _URGENT_RE
+    for s in ["ye kaam jaldi karo", "URGENT: call client", "🔴 abhi karo", "asap bhejo"]:
+        assert _URGENT_RE.search(s), s
+    assert not _URGENT_RE.search("normal follow up kal karna")
+
+
+def test_staff_done_with_completion_note():
+    from ai_companion.modules.angc import task_intake
+
+    task = db.create_task("Sandhya", "Client Management", "Note-on-done", "raw")
+    reply = task_intake.handle_staff_message("919109128734", f"done {task['id']} client ne confirm kar diya")
+    assert "complete" in reply.lower()
+    notes = db.list_notes(task["id"])
+    assert len(notes) == 1 and "client ne confirm" in notes[0]["body"]
+    assert db.get_task(task["id"])["status"] == "done"
+
+    # plain "done N" with no note adds no note
+    task2 = db.create_task("Sandhya", "Client Management", "No-note", "raw")
+    task_intake.handle_staff_message("919109128734", f"done {task2['id']}")
+    assert db.list_notes(task2["id"]) == []
+
+
+def test_ics_urgent_priority():
+    from ai_companion.modules.angc import ics
+
+    tasks = [{
+        "id": 9, "title": "Urgent thing", "assignee_name": "Ramu", "assigned_by": "NG Sir",
+        "category": "Expenses", "status": "pending", "due_date": "2030-01-01", "message": "",
+        "priority": "urgent",
+    }]
+    out = ics.build_ics(tasks, "Test")
+    assert "🔴" in out and "PRIORITY:1" in out
 
 
 def test_calendar_feed_url_uses_https_behind_proxy(monkeypatch):

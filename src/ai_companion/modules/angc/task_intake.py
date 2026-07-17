@@ -53,7 +53,8 @@ Analyse his message and return JSON with these exact fields:
 "title":string,
 "category":string,
 "assignee":string|null,
-"due_date":"YYYY-MM-DD"|null}}
+"due_date":"YYYY-MM-DD"|null,
+"priority":"urgent"|"normal"}}
 
 Rules:
 - intent TASK: he wants NEW work done, tracked, reminded, or delegated (even a bare case name with a person's name/mention is a TASK).
@@ -67,7 +68,15 @@ Rules:
 {categories}
 - assignee: ONLY if one of {employees} is named or @mentioned in the message, else null. Never invent a name.
 - due_date: only if an explicit date/day is mentioned (today is {today} IST).
+- priority: "urgent" if he signals urgency (urgent, jaldi, turant, abhi, asap, foran, immediately, aaj hi, important, emergency), else "normal".
 Return ONLY the JSON object."""
+
+
+# Deterministic urgency backstop — upgrades to urgent even if the LLM misses it.
+_URGENT_RE = re.compile(
+    r"\b(urgent|jaldi|turant|foran|asap|emergency|immediately|abhi\s*abhi|aaj\s*hi|jald(i)?\s*se)\b|🔴|❗|‼️",
+    re.IGNORECASE,
+)
 
 
 def extract_task(text: str) -> dict:
@@ -104,6 +113,7 @@ def extract_task(text: str) -> dict:
         task_id = int(data.get("task_id"))
     except (TypeError, ValueError):
         task_id = None
+    priority = "urgent" if (str(data.get("priority")).lower() == "urgent" or _URGENT_RE.search(text)) else "normal"
     return {
         "intent": intent,
         "task_id": task_id,
@@ -111,6 +121,7 @@ def extract_task(text: str) -> dict:
         "category": category,
         "assignee": team.resolve_employee_name(data.get("assignee")),
         "due_date": data.get("due_date"),
+        "priority": priority,
     }
 
 
@@ -187,13 +198,20 @@ def handle_director_message(text: str) -> str:
     mention = team.extract_mention(text)
     assignee = team.pick_assignee(extracted["category"], mention or extracted["assignee"])
 
+    # Urgent tasks with no stated deadline are assumed due today, so they show
+    # on the calendar and can be chased.
+    due_date = extracted["due_date"]
+    if not due_date and extracted["priority"] == "urgent":
+        due_date = datetime.now(IST).strftime("%Y-%m-%d")
+
     try:
         task = db.create_task(
             assignee_name=assignee,
             category=extracted["category"],
             title=extracted["title"],
             message=text,
-            due_date=extracted["due_date"],
+            due_date=due_date,
+            priority=extracted["priority"],
         )
     except Exception as exc:
         logger.error("[angc_intake] task save failed: %s", exc)
@@ -201,9 +219,10 @@ def handle_director_message(text: str) -> str:
 
     notified = _notify_assignee(task)
 
+    urgent_tag = "🔴 *URGENT* " if task.get("priority") == "urgent" else ""
     reply = (
         "Ji Sir 🙏 Task note kar liya hai.\n\n"
-        f"📋 Task #{task['id']}: {task['title']}\n"
+        f"{urgent_tag}📋 Task #{task['id']}: {task['title']}\n"
         f"👤 Assigned to: {task['assignee_name']} ({task['assignee_full_name']})\n"
         f"🏷️ Category: {task['category']}"
     )
@@ -215,8 +234,9 @@ def handle_director_message(text: str) -> str:
 
 
 def _task_card(task: dict) -> str:
+    urgent_tag = "🔴 *URGENT* " if task.get("priority") == "urgent" else ""
     card = (
-        f"📋 Task #{task['id']}: {task['title']}\n"
+        f"{urgent_tag}📋 Task #{task['id']}: {task['title']}\n"
         f"👤 Assigned to: {task['assignee_name']} ({task['assignee_full_name']})\n"
         f"🏷️ Category: {task['category']}"
     )
@@ -342,9 +362,10 @@ def _notify_assignee(task: dict) -> bool:
     phone = task.get("assignee_phone")
     if not phone:
         return False
+    urgent_tag = "🔴 *URGENT* " if task.get("priority") == "urgent" else ""
     msg = (
         f"🔔 Naya task — NG Sir ki taraf se\n\n"
-        f"📋 Task #{task['id']}: {task['title']}\n"
+        f"{urgent_tag}📋 Task #{task['id']}: {task['title']}\n"
         f"🏷️ {task['category']}\n\n"
         f"Message: \"{task['message']}\""
     )
@@ -438,9 +459,11 @@ def _smalltalk_reply(text: str) -> str:
 # Staff flow (simple WhatsApp commands)
 # ---------------------------------------------------------------------------
 
-_DONE_RE = re.compile(r"^(?:done|complete[d]?|ho\s*gaya)\s*#?(\d+)", re.IGNORECASE)
-_START_RE = re.compile(r"^(?:start|working|shuru)\s*#?(\d+)", re.IGNORECASE)
-_REVIEW_RE = re.compile(r"^(?:review|check)\s*#?(\d+)", re.IGNORECASE)
+# Capture group 2 = an optional completion/status note after the task number
+# ("done 5 client ne confirm kar diya" → note stored as proof of completion).
+_DONE_RE = re.compile(r"^(?:done|complete[d]?|ho\s*gaya)\s*#?(\d+)\b[\s:.\-–]*(.*)$", re.IGNORECASE | re.DOTALL)
+_START_RE = re.compile(r"^(?:start|working|shuru)\s*#?(\d+)\b[\s:.\-–]*(.*)$", re.IGNORECASE | re.DOTALL)
+_REVIEW_RE = re.compile(r"^(?:review|check)\s*#?(\d+)\b[\s:.\-–]*(.*)$", re.IGNORECASE | re.DOTALL)
 
 
 def handle_staff_message(phone: str, text: str) -> str:
@@ -458,17 +481,23 @@ def handle_staff_message(phone: str, text: str) -> str:
         if not m:
             continue
         task_id = int(m.group(1))
+        note_text = (m.group(2) or "").strip()
         task = db.get_task(task_id)
         if not task or task["assignee_id"] != user["id"]:
             return f"Task #{task_id} aapke naam par nahi mila 🤔 'tasks' bhejkar apni list dekh sakte hain."
         db.update_task_status(task_id, status)
+        # Any text after the number is stored as a note — proof / status update.
+        if note_text:
+            db.add_note(task_id, user["id"], note_text)
+        note_suffix = " (note save kar diya 📝)" if note_text else ""
         if status == "done":
-            _notify_director(f"✅ {emp_key} ne Task #{task_id} complete kar diya: {task['title']}")
-            return f"Shabash! Task #{task_id} complete mark ho gaya ✅"
+            proof = f"\n📝 {emp_key}: \"{note_text}\"" if note_text else ""
+            _notify_director(f"✅ {emp_key} ne Task #{task_id} complete kar diya: {task['title']}{proof}")
+            return f"Shabash! Task #{task_id} complete mark ho gaya ✅{note_suffix}"
         if status == "in_review":
             _notify_director(f"🔍 {emp_key} ne Task #{task_id} review mein daala hai: {task['title']}")
-            return f"Theek hai, Task #{task_id} review mein daal diya 🔍"
-        return f"Theek hai, Task #{task_id} in-progress mark kar diya 👍"
+            return f"Theek hai, Task #{task_id} review mein daal diya 🔍{note_suffix}"
+        return f"Theek hai, Task #{task_id} in-progress mark kar diya 👍{note_suffix}"
 
     if text.lower() in ("tasks", "task", "mere tasks", "list", "my tasks"):
         open_tasks = [t for t in db.list_tasks(assignee_id=user["id"], limit=30) if t["status"] != "done"]
@@ -487,7 +516,8 @@ def handle_staff_message(phone: str, text: str) -> str:
         "• tasks — apne open tasks dekhein\n"
         "• start <number> — task shuru\n"
         "• review <number> — review ke liye bhejein\n"
-        "• done <number> — task complete"
+        "• done <number> — task complete\n"
+        "  (note bhi likh sakte hain: done 5 client ne confirm kiya)"
     )
     if settings.ANGC_DASHBOARD_URL:
         help_text += f"\n\nPoora dashboard: {settings.ANGC_DASHBOARD_URL}"
