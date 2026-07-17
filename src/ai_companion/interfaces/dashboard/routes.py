@@ -498,7 +498,9 @@ def _page(title: str, body: str, user: dict | None = None, auth_page: bool = Fal
     if user:
         home_label = "Dashboard" if user["role"] == "admin" else "My Tasks"
         admin_links = (
-            '<a href="/admin/analytics">Analytics</a><a href="/admin/users">Team</a>'
+            '<a href="/admin/analytics">Analytics</a>'
+            '<a href="/admin/recurring">Recurring</a>'
+            '<a href="/admin/users">Team</a>'
             if user["role"] == "admin" else ""
         )
         nav = (
@@ -778,6 +780,134 @@ def analytics_page(request: Request):
   <div class="tchart">{bars}</div>
 </div>"""
     return _page("Analytics", body, user)
+
+
+_RECURRENCE_OPTIONS = [
+    ("daily", "Daily"),
+    ("weekly:MON", "Every Monday"), ("weekly:TUE", "Every Tuesday"),
+    ("weekly:WED", "Every Wednesday"), ("weekly:THU", "Every Thursday"),
+    ("weekly:FRI", "Every Friday"), ("weekly:SAT", "Every Saturday"),
+    ("weekly:SUN", "Every Sunday"),
+    ("monthly:1", "Monthly (1st)"), ("monthly:15", "Monthly (15th)"),
+]
+
+
+@dashboard_router.get("/admin/recurring", response_class=HTMLResponse)
+def recurring_page(request: Request, ok: str = "", error: str = ""):
+    from ai_companion.modules.angc import notify
+
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    if user["role"] != "admin":
+        return RedirectResponse("/dashboard")
+
+    rows = ""
+    for r in db.list_recurring():
+        active = r["active"] == 1
+        toggle_label = "Pause" if active else "Resume"
+        status_pill = (
+            '<span class="role-pill role-employee">Active</span>' if active
+            else '<span class="role-pill" style="background:#eef1f6;color:#64748b">Paused</span>'
+        )
+        rows += f"""<tr>
+  <td><b>{_esc(r['title'])}</b><br><span style="color:var(--ink-3);font-size:12px">{_esc(r['category'])}</span></td>
+  <td>🔁 {_esc(notify.recurrence_label(r['recurrence']))}</td>
+  <td>{_avatar(r['assignee_name'], 'av')} {_esc(r['assignee_name'])}</td>
+  <td>{status_pill}</td>
+  <td>{_esc(r['last_run_date'] or '—')}</td>
+  <td>
+    <form class="inline" method="post" action="/admin/recurring/{r['id']}/toggle"><button class="act b-reopen" type="submit">{toggle_label}</button></form>
+    <form class="inline" method="post" action="/admin/recurring/{r['id']}/delete" onsubmit="return confirm('Delete this recurring task?')"><button class="act b-del" type="submit">✕</button></form>
+  </td>
+</tr>"""
+    table = (
+        f'<div style="overflow-x:auto"><table class="users"><tr><th>Task</th><th>Repeats</th><th>Assignee</th><th>Status</th><th>Last run</th><th></th></tr>{rows}</table></div>'
+        if rows else _empty("Koi recurring task nahi hai. Neeche add kariye 👇", "🔁")
+    )
+
+    cat_options = "".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in team.CATEGORIES)
+    rec_options = "".join(f'<option value="{v}">{_esc(l)}</option>' for v, l in _RECURRENCE_OPTIONS)
+    assignee_options = "".join(
+        f'<option value="{u["id"]}">{_esc(u["name"])} ({_esc(u["full_name"])})</option>' for u in db.list_staff()
+    )
+    note = ""
+    if ok:
+        note = '<div class="ok">Recurring task set ho gaya ✅</div>'
+    elif error:
+        note = '<div class="error">Title zaroori hai.</div>'
+
+    body = f"""<h1>Recurring Tasks</h1>
+<div class="sub">Auto-create hone wale tasks · <a class="backlink" href="/dashboard">← back to board</a></div>
+{table}
+<h2>Add recurring task</h2>
+<div class="form-box">
+  <form method="post" action="/admin/recurring">
+    <label>Title</label><input name="title" required placeholder="e.g. Papa ki medicine reminder">
+    <label>Details / message</label><textarea name="message" placeholder="Any extra context..."></textarea>
+    <div class="form-row">
+      <div><label>Repeats</label><select name="recurrence">{rec_options}</select></div>
+      <div><label>Category</label><select name="category">{cat_options}</select></div>
+    </div>
+    <div class="form-row">
+      <div><label>Assign to</label><select name="assignee_id">{assignee_options}</select></div>
+      <div><label>Priority</label><select name="priority"><option value="normal">Normal</option><option value="urgent">🔴 Urgent</option></select></div>
+    </div>
+    {note}
+    <button class="primary" type="submit">Add recurring task</button>
+  </form>
+</div>"""
+    return _page("Recurring", body, user)
+
+
+@dashboard_router.post("/admin/recurring")
+def recurring_create(
+    request: Request,
+    title: str = Form(...),
+    message: str = Form(""),
+    recurrence: str = Form(...),
+    category: str = Form(...),
+    assignee_id: int = Form(...),
+    priority: str = Form("normal"),
+):
+    user = current_user(request)
+    if not user or user["role"] != "admin":
+        return RedirectResponse("/dashboard", status_code=303)
+    if not title.strip():
+        return RedirectResponse("/admin/recurring?error=1", status_code=303)
+    target = db.get_user_by_id(assignee_id)
+    if not target or target["role"] == "admin":
+        return RedirectResponse("/admin/recurring?error=1", status_code=303)
+    valid_rec = {v for v, _ in _RECURRENCE_OPTIONS}
+    if recurrence not in valid_rec:
+        return RedirectResponse("/admin/recurring?error=1", status_code=303)
+    db.create_recurring(
+        assignee_name=target["name"], category=category if category in team.CATEGORIES else team.DEFAULT_CATEGORY,
+        title=title.strip(), message=message.strip() or title.strip(),
+        recurrence=recurrence, priority=priority if priority in db.TASK_PRIORITIES else "normal",
+        created_by=user["name"],
+    )
+    return RedirectResponse("/admin/recurring?ok=1", status_code=303)
+
+
+@dashboard_router.post("/admin/recurring/{rid}/toggle")
+def recurring_toggle(request: Request, rid: int):
+    user = current_user(request)
+    if not user or user["role"] != "admin":
+        return RedirectResponse("/dashboard", status_code=303)
+    r = db.get_recurring(rid)
+    if r:
+        db.set_recurring_active(rid, r["active"] != 1)
+    return RedirectResponse("/admin/recurring", status_code=303)
+
+
+@dashboard_router.post("/admin/recurring/{rid}/delete")
+def recurring_delete(request: Request, rid: int):
+    user = current_user(request)
+    if not user or user["role"] != "admin":
+        return RedirectResponse("/dashboard", status_code=303)
+    db.delete_recurring(rid)
+    return RedirectResponse("/admin/recurring", status_code=303)
 
 
 @dashboard_router.get("/admin/employee/{employee_id}", response_class=HTMLResponse)

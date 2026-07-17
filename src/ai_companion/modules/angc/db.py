@@ -124,6 +124,23 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_notes_task ON task_notes(task_id);
+            CREATE TABLE IF NOT EXISTS job_runs (
+                run_key TEXT PRIMARY KEY,
+                ran_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS recurring_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assignee_id INTEGER NOT NULL REFERENCES users(id),
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                priority TEXT NOT NULL DEFAULT 'normal',
+                recurrence TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT NOT NULL DEFAULT 'NG Sir',
+                last_run_date TEXT,
+                created_at TEXT NOT NULL
+            );
             """
         )
         _migrate_calendar_token(conn)
@@ -442,6 +459,115 @@ def summary_stats() -> dict:
         for row in conn.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"):
             totals[row["status"]] = row["n"]
         return {"per_employee": per_employee, "totals": totals}
+
+
+# ---------------------------------------------------------------------------
+# Scheduler support — idempotent job ledger + recurring tasks
+# ---------------------------------------------------------------------------
+
+def claim_job(run_key: str) -> bool:
+    """Atomically claim a job run. Returns True the first time a run_key is
+    seen, False on any repeat — so a scheduled job fires exactly once even if
+    the loop wakes twice, the app restarts, or two replicas race."""
+    try:
+        with _connect() as conn:
+            conn.execute("INSERT INTO job_runs (run_key, ran_at) VALUES (?, ?)", (run_key, _utcnow()))
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def open_tasks_with_due() -> list[dict]:
+    """All not-done tasks that have a due date (for reminder/escalation sweeps)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT t.*, u.name AS assignee_name, u.full_name AS assignee_full_name, u.phone AS assignee_phone"
+            " FROM tasks t JOIN users u ON u.id = t.assignee_id"
+            " WHERE t.status != 'done' AND t.due_date IS NOT NULL AND t.due_date != ''"
+            " ORDER BY t.due_date ASC",
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def director_daily_snapshot() -> dict:
+    """Counts for the morning/evening digest (IST day boundaries)."""
+    today = datetime.now(IST).date()
+    start_utc = datetime(today.year, today.month, today.day, tzinfo=IST).astimezone(timezone.utc)
+    s = start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    stats = summary_stats()
+    with _connect() as conn:
+        done_today = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status='done' AND completed_at>=?", (s,)
+        ).fetchone()[0]
+        new_today = conn.execute("SELECT COUNT(*) FROM tasks WHERE created_at>=?", (s,)).fetchone()[0]
+    overdue = sum(1 for t in open_tasks_with_due() if t["due_date"] < str(today))
+    totals = stats["totals"]
+    return {
+        "open": totals["pending"] + totals["in_progress"] + totals["in_review"],
+        "pending": totals["pending"],
+        "in_progress": totals["in_progress"],
+        "in_review": totals["in_review"],
+        "overdue": overdue,
+        "done_today": done_today,
+        "new_today": new_today,
+        "per_employee": stats["per_employee"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Recurring tasks
+# ---------------------------------------------------------------------------
+
+def create_recurring(assignee_name: str, category: str, title: str, message: str,
+                     recurrence: str, priority: str = "normal", created_by: str = "NG Sir") -> dict:
+    assignee = get_user_by_name(assignee_name)
+    if not assignee:
+        raise ValueError(f"Unknown assignee: {assignee_name}")
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO recurring_tasks (assignee_id, category, title, message, priority, recurrence, created_by, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (assignee["id"], category, title, message,
+             priority if priority in TASK_PRIORITIES else "normal", recurrence, created_by, _utcnow()),
+        )
+        rid = cur.lastrowid
+    return get_recurring(rid)
+
+
+def get_recurring(rid: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT r.*, u.name AS assignee_name, u.full_name AS assignee_full_name"
+            " FROM recurring_tasks r JOIN users u ON u.id = r.assignee_id WHERE r.id=?",
+            (rid,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_recurring(active_only: bool = False) -> list[dict]:
+    q = ("SELECT r.*, u.name AS assignee_name, u.full_name AS assignee_full_name"
+         " FROM recurring_tasks r JOIN users u ON u.id = r.assignee_id")
+    if active_only:
+        q += " WHERE r.active = 1"
+    q += " ORDER BY r.id DESC"
+    with _connect() as conn:
+        return [dict(r) for r in conn.execute(q).fetchall()]
+
+
+def set_recurring_active(rid: int, active: bool) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE recurring_tasks SET active=? WHERE id=?", (1 if active else 0, rid))
+
+
+def delete_recurring(rid: int) -> bool:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM recurring_tasks WHERE id=?", (rid,))
+        return cur.rowcount > 0
+
+
+def mark_recurring_run(rid: int, day: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE recurring_tasks SET last_run_date=? WHERE id=?", (day, rid))
 
 
 def _parse_utc(iso: str | None):

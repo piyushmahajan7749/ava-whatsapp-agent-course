@@ -54,7 +54,8 @@ Analyse his message and return JSON with these exact fields:
 "category":string,
 "assignee":string|null,
 "due_date":"YYYY-MM-DD"|null,
-"priority":"urgent"|"normal"}}
+"priority":"urgent"|"normal",
+"recurrence":"daily"|"weekly:MON"|"weekly:TUE"|"weekly:WED"|"weekly:THU"|"weekly:FRI"|"weekly:SAT"|"weekly:SUN"|"monthly:<day>"|null}}
 
 Rules:
 - intent TASK: he wants NEW work done, tracked, reminded, or delegated (even a bare case name with a person's name/mention is a TASK).
@@ -69,6 +70,7 @@ Rules:
 - assignee: ONLY if one of {employees} is named or @mentioned in the message, else null. Never invent a name.
 - due_date: only if an explicit date/day is mentioned (today is {today} IST).
 - priority: "urgent" if he signals urgency (urgent, jaldi, turant, abhi, asap, foran, immediately, aaj hi, important, emergency), else "normal".
+- recurrence: ONLY if he clearly wants it to repeat — "daily"/"roz"/"har roz" -> "daily"; "har Monday"/"every Tuesday" -> "weekly:MON"/"weekly:TUE"; "har mahine 5 tareekh"/"monthly on the 10th" -> "monthly:5"/"monthly:10". A one-time task -> null.
 Return ONLY the JSON object."""
 
 
@@ -122,7 +124,27 @@ def extract_task(text: str) -> dict:
         "assignee": team.resolve_employee_name(data.get("assignee")),
         "due_date": data.get("due_date"),
         "priority": priority,
+        "recurrence": _normalize_recurrence(data.get("recurrence")),
     }
+
+
+def _normalize_recurrence(rec) -> str | None:
+    """Validate an LLM recurrence value; return None if not a real recurrence."""
+    if not rec or not isinstance(rec, str):
+        return None
+    r = rec.strip().lower()
+    if r == "daily":
+        return "daily"
+    if r.startswith("weekly:"):
+        dow = r.split(":", 1)[1].upper()[:3]
+        return f"weekly:{dow}" if dow in ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN") else None
+    if r.startswith("monthly:"):
+        try:
+            dom = int(r.split(":", 1)[1])
+        except ValueError:
+            return None
+        return f"monthly:{dom}" if 1 <= dom <= 31 else None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +189,8 @@ _DIR_DELETE_RE = re.compile(
     r"|^task\s*#?(\d+)\s*(?:delete|cancel|remove|hata\s*do|hatao|cancel\s*karo)\s*\.?\s*$",
     re.IGNORECASE,
 )
+_DIR_APPROVE_RE = re.compile(r"^(?:approve|approved|ok|theek|sahi|pass)\s*#?(\d+)\b", re.IGNORECASE)
+_DIR_REJECT_RE = re.compile(r"^(?:reject|redo|wapas|dobara|fir\s*se|phir\s*se)\s*#?(\d+)\b\s*(.*)$", re.IGNORECASE | re.DOTALL)
 
 
 def handle_director_message(text: str) -> str:
@@ -182,6 +206,12 @@ def handle_director_message(text: str) -> str:
     m = _DIR_DELETE_RE.match(text)
     if m:
         return _handle_delete(int(m.group(1) or m.group(2)))
+    m = _DIR_APPROVE_RE.match(text)
+    if m:
+        return _handle_approve(int(m.group(1)))
+    m = _DIR_REJECT_RE.match(text)
+    if m:
+        return _handle_reject(int(m.group(1)), (m.group(2) or "").strip())
 
     extracted = extract_task(text)
 
@@ -197,6 +227,10 @@ def handle_director_message(text: str) -> str:
     # Deterministic @mention beats the LLM's guess.
     mention = team.extract_mention(text)
     assignee = team.pick_assignee(extracted["category"], mention or extracted["assignee"])
+
+    # Recurring request → set up a repeating template instead of a one-off.
+    if extracted.get("recurrence"):
+        return _handle_recurring(assignee, extracted, text)
 
     # Urgent tasks with no stated deadline are assumed due today, so they show
     # on the calendar and can be chased.
@@ -356,6 +390,70 @@ def _handle_delete(task_id: int) -> str:
     )
 
 
+def _handle_recurring(assignee: str, extracted: dict, text: str) -> str:
+    from ai_companion.modules.angc import notify
+
+    try:
+        rec = db.create_recurring(
+            assignee_name=assignee,
+            category=extracted["category"],
+            title=extracted["title"],
+            message=text,
+            recurrence=extracted["recurrence"],
+            priority=extracted["priority"],
+        )
+    except Exception as exc:
+        logger.error("[angc_intake] recurring save failed: %s", exc)
+        return "Sir, recurring task set karne mein dikkat aa gayi ⚠️"
+
+    label = notify.recurrence_label(extracted["recurrence"])
+    reply = (
+        "Ji Sir 🙏 Recurring task set kar diya hai.\n\n"
+        f"🔁 {label}\n"
+        f"📋 {rec['title']}\n"
+        f"👤 {rec['assignee_name']} ({rec['assignee_full_name']})\n"
+        f"🏷️ {rec['category']}"
+    )
+    # If it is due today, create today's instance right away.
+    today = datetime.now(IST)
+    if notify.recurrence_due(extracted["recurrence"], today):
+        materialized = notify.materialize_recurring()
+        if materialized:
+            reply += "\n\nAaj ke liye task bhi bana diya aur assignee ko bhej diya ✅"
+    return reply
+
+
+def _handle_approve(task_id: int) -> str:
+    task = db.get_task(task_id)
+    if not task:
+        return f"Sir, Task #{task_id} nahi mila 🤔"
+    db.update_task_status(task_id, "done")
+    if settings.ANGC_NOTIFY_ASSIGNEES and task.get("assignee_phone"):
+        _send_whatsapp(
+            task["assignee_phone"],
+            f"✅ Shabash! NG Sir ne aapka kaam approve kar diya.\n\n📋 Task #{task_id}: {task['title']}",
+        )
+    return f"Ji Sir 🙏 Task #{task_id} approve karke complete mark kar diya ✅\n📋 {task['title']} ({task['assignee_name']})"
+
+
+def _handle_reject(task_id: int, reason: str) -> str:
+    task = db.get_task(task_id)
+    if not task:
+        return f"Sir, Task #{task_id} nahi mila 🤔"
+    db.update_task_status(task_id, "in_progress")
+    admin = db.get_user_by_name("NG Sir")
+    if reason and admin:
+        db.add_note(task_id, admin["id"], f"Wapas bheja: {reason}")
+    if settings.ANGC_NOTIFY_ASSIGNEES and task.get("assignee_phone"):
+        reason_line = f"\n\nSir ka kehna: \"{reason}\"" if reason else ""
+        _send_whatsapp(
+            task["assignee_phone"],
+            f"🔁 NG Sir ne Task #{task_id} wapas bheja hai — thoda aur kaam chahiye.\n\n"
+            f"📋 {task['title']}{reason_line}\n\nDobara complete hone par: done {task_id}",
+        )
+    return f"Theek hai Sir 🙏 Task #{task_id} {task['assignee_name']} ko wapas bhej diya (in-progress) 🔁"
+
+
 def _notify_assignee(task: dict) -> bool:
     if not settings.ANGC_NOTIFY_ASSIGNEES:
         return False
@@ -495,7 +593,13 @@ def handle_staff_message(phone: str, text: str) -> str:
             _notify_director(f"✅ {emp_key} ne Task #{task_id} complete kar diya: {task['title']}{proof}")
             return f"Shabash! Task #{task_id} complete mark ho gaya ✅{note_suffix}"
         if status == "in_review":
-            _notify_director(f"🔍 {emp_key} ne Task #{task_id} review mein daala hai: {task['title']}")
+            proof = f"\n📝 {emp_key}: \"{note_text}\"" if note_text else ""
+            _notify_director(
+                f"🔍 {emp_key} ne Task #{task_id} review ke liye bheja hai:\n"
+                f"📋 {task['title']}{proof}\n\n"
+                f"Approve karne ke liye: approve {task_id}\n"
+                f"Wapas bhejne ke liye: reject {task_id} <reason>"
+            )
             return f"Theek hai, Task #{task_id} review mein daal diya 🔍{note_suffix}"
         return f"Theek hai, Task #{task_id} in-progress mark kar diya 👍{note_suffix}"
 

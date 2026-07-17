@@ -91,5 +91,18 @@ class Settings(BaseSettings):
     # Public URL of the dashboard, included in WhatsApp notifications (optional).
     ANGC_DASHBOARD_URL: str | None = None
 
+    # --- Proactive scheduler (reminders / digests / recurring tasks) ---
+    # Master switch for the in-process scheduler loop.
+    ANGC_SCHEDULER_ENABLED: bool = True
+    # How often the scheduler wakes to check for due jobs (seconds).
+    ANGC_SCHEDULER_INTERVAL_SECONDS: int = 300
+    # IST hour (0-23) to send the director's morning and evening digests.
+    ANGC_MORNING_DIGEST_HOUR: int = 9
+    ANGC_EVENING_DIGEST_HOUR: int = 20
+    # Escalate an overdue task to the director once it is this many days late.
+    ANGC_OVERDUE_ESCALATE_DAYS: int = 2
+    # Send overdue reminders to assignees (once per task per day).
+    ANGC_OVERDUE_REMINDERS: bool = True
+
 
 settings = Settings()

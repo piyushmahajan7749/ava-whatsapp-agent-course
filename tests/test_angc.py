@@ -5,6 +5,7 @@ import os
 import pytest
 
 os.environ.setdefault("DIRECTOR_PHONE_NUMBERS", "919999900000")
+os.environ.setdefault("ANGC_SCHEDULER_ENABLED", "false")  # no background jobs during tests
 
 from ai_companion.modules.angc import db, team
 from ai_companion.settings import settings
@@ -464,6 +465,147 @@ def test_analytics_page_rbac():
         e.post("/login", data={"email": "cspangcgroup@gmail.com", "password": settings.ANGC_DEFAULT_PASSWORD})
         r = e.get("/admin/analytics", follow_redirects=False)
         assert r.status_code in (303, 307)
+
+
+# ---------------------------------------------------------------------------
+# tranche 3: scheduler ledger, recurrence, proactive jobs, approvals
+# ---------------------------------------------------------------------------
+
+def test_job_ledger_idempotent():
+    assert db.claim_job("digest:morning:2026-07-17") is True
+    assert db.claim_job("digest:morning:2026-07-17") is False  # repeat rejected
+    assert db.claim_job("digest:morning:2026-07-18") is True   # different key ok
+
+
+def test_recurrence_due_and_label():
+    from ai_companion.modules.angc import notify
+    from datetime import date
+
+    monday = date(2026, 7, 13)  # a Monday
+    assert notify.recurrence_due("daily", monday)
+    assert notify.recurrence_due("weekly:MON", monday)
+    assert not notify.recurrence_due("weekly:TUE", monday)
+    assert notify.recurrence_due("monthly:13", monday)
+    assert not notify.recurrence_due("monthly:14", monday)
+    # monthly:31 in a 30-day month runs on the last day
+    assert notify.recurrence_due("monthly:31", date(2026, 6, 30))
+    assert notify.recurrence_label("weekly:FRI") == "Every Friday"
+    assert notify.recurrence_label("daily") == "Daily"
+
+
+def test_recurring_materialization(monkeypatch):
+    from ai_companion.modules.angc import notify
+    monkeypatch.setattr(notify, "send_whatsapp", lambda *a, **k: True)
+
+    from datetime import datetime
+    from ai_companion.modules.angc.db import IST
+    today = datetime.now(IST)
+
+    # a recurrence that IS due today, and one that is not
+    due_rec = "daily"
+    not_due_dow = "weekly:MON" if today.weekday() != 0 else "weekly:TUE"
+    db.create_recurring("Sandhya", "Event & Personal Reminder", "Daily medicine", "9am medicine", due_rec)
+    db.create_recurring("Ramu", "Mahakal Darshan", "Weekly darshan", "arrange", not_due_dow)
+
+    n = notify.materialize_recurring()
+    assert n == 1  # only the daily one
+    sandhya = db.get_user_by_name("Sandhya")
+    titles = [t["title"] for t in db.list_tasks(assignee_id=sandhya["id"])]
+    assert "Daily medicine" in titles
+
+    # running again the same day does NOT duplicate (last_run_date guard)
+    assert notify.materialize_recurring() == 0
+
+
+def test_overdue_sweep_reminders_and_escalation(monkeypatch):
+    from ai_companion.modules.angc import notify
+    sent = []
+    monkeypatch.setattr(notify, "send_whatsapp", lambda to, text: sent.append((to, text)) or True)
+    monkeypatch.setattr(settings, "DIRECTOR_PHONE_NUMBERS", "919826000001")
+    monkeypatch.setattr(settings, "ANGC_OVERDUE_ESCALATE_DAYS", 2)
+
+    # very overdue task -> both a reminder to assignee and an escalation to director
+    db.create_task("Sandhya", "Client Management", "Way overdue", "m", due_date="2000-01-01")
+    res = notify.run_overdue_sweep()
+    assert res["reminded"] == 1 and res["escalated"] == 1
+    assert any("919109128734" == to for to, _ in sent)   # Sandhya
+    assert any("919826000001" == to for to, _ in sent)   # director
+
+    # second sweep same day is idempotent (no duplicate sends)
+    sent.clear()
+    res2 = notify.run_overdue_sweep()
+    assert res2 == {"reminded": 0, "escalated": 0} and sent == []
+
+
+def test_digest_content(monkeypatch):
+    from ai_companion.modules.angc import notify
+    sent = []
+    monkeypatch.setattr(notify, "send_whatsapp", lambda to, text: sent.append((to, text)) or True)
+    monkeypatch.setattr(settings, "DIRECTOR_PHONE_NUMBERS", "919826000001")
+
+    db.create_task("Sandhya", "Client Management", "Open one", "m")
+    notify.run_digest("morning")
+    assert sent and "Suprabhat" in sent[0][1] and "Open:" in sent[0][1]
+    sent.clear()
+    notify.run_digest("evening")
+    assert "aaj ka summary" in sent[0][1].lower() and "complete" in sent[0][1]
+
+
+def test_director_approve_reject(monkeypatch):
+    from ai_companion.modules.angc import task_intake
+    monkeypatch.setattr(task_intake, "_send_whatsapp", lambda *a, **k: None)
+
+    t = db.create_task("Sandhya", "Client Management", "Review me", "m")
+    db.update_task_status(t["id"], "in_review")
+
+    reply = task_intake.handle_director_message(f"approve {t['id']}")
+    assert "approve" in reply.lower()
+    assert db.get_task(t["id"])["status"] == "done"
+
+    t2 = db.create_task("Ramu", "Expenses", "Reject me", "m")
+    db.update_task_status(t2["id"], "in_review")
+    reply2 = task_intake.handle_director_message(f"reject {t2['id']} thoda aur detail chahiye")
+    assert "wapas" in reply2.lower()
+    assert db.get_task(t2["id"])["status"] == "in_progress"
+    notes = db.list_notes(t2["id"])
+    assert any("detail chahiye" in n["body"] for n in notes)
+
+
+def test_normalize_recurrence():
+    from ai_companion.modules.angc.task_intake import _normalize_recurrence
+    assert _normalize_recurrence("daily") == "daily"
+    assert _normalize_recurrence("WEEKLY:mon") == "weekly:MON"
+    assert _normalize_recurrence("monthly:5") == "monthly:5"
+    assert _normalize_recurrence("monthly:99") is None
+    assert _normalize_recurrence("weekly:XYZ") is None
+    assert _normalize_recurrence(None) is None
+    assert _normalize_recurrence("sometimes") is None
+
+
+def test_recurring_dashboard_crud(monkeypatch):
+    from fastapi.testclient import TestClient
+    from ai_companion.interfaces.whatsapp.webhook_endpoint import app
+
+    with TestClient(app) as c:
+        c.post("/login", data={"email": settings.ANGC_ADMIN_EMAIL, "password": settings.ANGC_DEFAULT_PASSWORD})
+        ramu = db.get_user_by_name("Ramu")
+        r = c.post("/admin/recurring", data={
+            "title": "Weekly Mahakal", "message": "arrange darshan", "recurrence": "weekly:SUN",
+            "category": "Mahakal Darshan", "assignee_id": str(ramu["id"]), "priority": "normal",
+        }, follow_redirects=True)
+        assert r.status_code == 200 and "Weekly Mahakal" in r.text and "Every Sunday" in r.text
+
+        rec = db.list_recurring()[0]
+        assert rec["active"] == 1
+        c.post(f"/admin/recurring/{rec['id']}/toggle")
+        assert db.get_recurring(rec["id"])["active"] == 0
+        c.post(f"/admin/recurring/{rec['id']}/delete")
+        assert db.get_recurring(rec["id"]) is None
+
+    # employee cannot reach recurring admin routes
+    with TestClient(app) as e:
+        e.post("/login", data={"email": "cspangcgroup@gmail.com", "password": settings.ANGC_DEFAULT_PASSWORD})
+        assert e.get("/admin/recurring", follow_redirects=False).status_code in (303, 307)
 
 
 def test_calendar_feed_url_uses_https_behind_proxy(monkeypatch):
