@@ -348,6 +348,26 @@ def test_ics_overdue_marker():
     assert "⚠️" in out
 
 
+def test_calendar_feed_url_uses_https_behind_proxy(monkeypatch):
+    """Azure Container Apps terminates TLS and proxies over http — the feed URL
+    we show must still be https:// or calendar apps refuse to subscribe."""
+    from fastapi.testclient import TestClient
+    from ai_companion.interfaces.whatsapp.webhook_endpoint import app
+
+    monkeypatch.setattr(settings, "ANGC_DASHBOARD_URL", None)
+    with TestClient(app) as c:
+        c.post("/login", data={"email": "cspangcgroup@gmail.com", "password": settings.ANGC_DEFAULT_PASSWORD})
+        page = c.get("/calendar", headers={"X-Forwarded-Proto": "https"}).text
+        assert 'value="https://' in page
+        assert 'value="http://' not in page
+        assert "webcal://" in page
+
+        # ANGC_DASHBOARD_URL, when set, wins over request headers
+        monkeypatch.setattr(settings, "ANGC_DASHBOARD_URL", "https://tasks.angcgroup.com")
+        page2 = c.get("/calendar").text
+        assert 'value="https://tasks.angcgroup.com/calendar/' in page2
+
+
 def test_dashboard_calendar_feed_scoping_and_auth():
     from fastapi.testclient import TestClient
     from ai_companion.interfaces.whatsapp.webhook_endpoint import app

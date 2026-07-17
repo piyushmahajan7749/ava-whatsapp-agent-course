@@ -6,6 +6,7 @@
 
 import html
 import logging
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Form, Request
@@ -19,6 +20,7 @@ from ai_companion.interfaces.dashboard.auth import (
 )
 from ai_companion.modules.angc import db, ics, team
 from ai_companion.modules.angc.db import IST
+from ai_companion.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -1114,6 +1116,23 @@ def users_reset_password(request: Request, user_id: int):
     return RedirectResponse(f"/admin/users?new_pw={quote(new_pw)}&for_user={quote(target['name'])}", status_code=303)
 
 
+def _external_base_url(request: Request) -> str:
+    """Public base URL of this app, e.g. 'https://host'.
+
+    Azure Container Apps terminates TLS at the ingress and proxies to us over
+    plain HTTP, so request.base_url reports scheme=http. Calendar apps reject
+    (or silently downgrade) an http:// subscription URL, so trust the
+    ingress's X-Forwarded-Proto. ANGC_DASHBOARD_URL wins when set.
+    """
+    if settings.ANGC_DASHBOARD_URL:
+        return settings.ANGC_DASHBOARD_URL.rstrip("/")
+    base = str(request.base_url).rstrip("/")
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    if forwarded_proto in ("http", "https"):
+        base = re.sub(r"^https?://", f"{forwarded_proto}://", base)
+    return base
+
+
 @dashboard_router.get("/calendar", response_class=HTMLResponse)
 def calendar_page(request: Request, copied: str = ""):
     user = current_user(request)
@@ -1122,7 +1141,7 @@ def calendar_page(request: Request, copied: str = ""):
 
     token = db.get_or_create_calendar_token(user["id"])
     feed_path = f"/calendar/{token}.ics"
-    feed_url = str(request.base_url).rstrip("/") + feed_path
+    feed_url = _external_base_url(request) + feed_path
     webcal_url = feed_url.replace("https://", "webcal://").replace("http://", "webcal://")
     scope_note = (
         "Isme poori team ke tasks (due date wale) dikhenge."
