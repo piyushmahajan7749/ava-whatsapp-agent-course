@@ -843,7 +843,7 @@ def edit_task_submit(
 
 
 @dashboard_router.get("/admin/users", response_class=HTMLResponse)
-def users_page(request: Request, ok: str = "", error: str = ""):
+def users_page(request: Request, ok: str = "", error: str = "", new_pw: str = "", for_user: str = ""):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login")
@@ -854,16 +854,30 @@ def users_page(request: Request, ok: str = "", error: str = ""):
     for u in [user] + db.list_staff():
         role_cls = "role-admin" if u["role"] == "admin" else "role-employee"
         role_label = "Admin" if u["role"] == "admin" else "Employee"
+        reset_btn = (
+            f'<form class="inline" method="post" action="/admin/users/{u["id"]}/reset-password" '
+            f'onsubmit="return confirm(\'Generate a new password for {_esc(u["name"])}? '
+            f'The old one stops working immediately.\')">'
+            f'<button class="act b-reopen" type="submit">🔑 Reset password</button></form>'
+            if u["id"] != user["id"] else ""
+        )
         rows += (
             f"<tr><td>{_avatar(u['name'], 'av')} </td><td><b>{_esc(u['name'])}</b><br>"
             f"<span style='color:var(--ink-3);font-size:12px'>{_esc(u['full_name'])}</span></td>"
             f"<td>{_esc(u['email'])}</td><td>{_esc(u['phone'])}</td>"
-            f"<td><span class='role-pill {role_cls}'>{role_label}</span></td></tr>"
+            f"<td><span class='role-pill {role_cls}'>{role_label}</span></td>"
+            f"<td>{reset_btn}</td></tr>"
         )
 
     note = ""
-    if ok:
-        note = '<div class="ok">Employee add ho gaya ✅ Default password unhe batayein.</div>'
+    if new_pw:
+        note = (
+            f'<div class="ok">New password for <b>{_esc(for_user)}</b>: '
+            f'<span style="font-family:monospace;font-size:14.5px;letter-spacing:.03em">{_esc(new_pw)}</span> '
+            f'— copy it now, it won\'t be shown again.</div>'
+        )
+    elif ok:
+        note = '<div class="ok">Employee added ✅ Share their login + password with them directly.</div>'
     elif error == "dup":
         note = '<div class="error">Is email se user pehle se hai.</div>'
     elif error:
@@ -871,8 +885,9 @@ def users_page(request: Request, ok: str = "", error: str = ""):
 
     body = f"""<h1>Team</h1>
 <div class="sub">Dashboard users — employees apne hi tasks dekh aur edit kar sakte hain</div>
+{note if new_pw or ok else ""}
 <table class="users">
-  <tr><th></th><th>Name</th><th>Email</th><th>WhatsApp</th><th>Role</th></tr>
+  <tr><th></th><th>Name</th><th>Email</th><th>WhatsApp</th><th>Role</th><th></th></tr>
   {rows}
 </table>
 <h2>Add employee</h2>
@@ -886,8 +901,8 @@ def users_page(request: Request, ok: str = "", error: str = ""):
       <div><label>Email (login)</label><input type="email" name="email" required></div>
       <div><label>WhatsApp number (optional)</label><input name="phone" placeholder="98xxxxxxx"></div>
     </div>
-    <label>Password</label><input name="password" required minlength="6">
-    {note}
+    <label>Password (leave blank to auto-generate)</label><input name="password" minlength="6" placeholder="min 6 chars">
+    {note if error else ""}
     <button class="primary" type="submit">Add employee</button>
   </form>
 </div>"""
@@ -901,19 +916,39 @@ def users_create(
     full_name: str = Form(""),
     email: str = Form(...),
     phone: str = Form(""),
-    password: str = Form(...),
+    password: str = Form(""),
 ):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
     if user["role"] != "admin":
         return RedirectResponse("/dashboard", status_code=303)
-    if not name.strip() or not email.strip() or len(password) < 6:
+    if not name.strip() or not email.strip():
         return RedirectResponse("/admin/users?error=1", status_code=303)
     if db.get_user_by_email(email):
         return RedirectResponse("/admin/users?error=dup", status_code=303)
-    db.create_user(name, full_name, email, phone, password, role="employee")
-    return RedirectResponse("/admin/users?ok=1", status_code=303)
+    pw = password.strip() or db.generate_password()
+    if len(pw) < 6:
+        return RedirectResponse("/admin/users?error=1", status_code=303)
+    db.create_user(name, full_name, email, phone, pw, role="employee")
+    from urllib.parse import quote
+    return RedirectResponse(f"/admin/users?new_pw={quote(pw)}&for_user={quote(name)}", status_code=303)
+
+
+@dashboard_router.post("/admin/users/{user_id}/reset-password")
+def users_reset_password(request: Request, user_id: int):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if user["role"] != "admin" or user_id == user["id"]:
+        return RedirectResponse("/dashboard", status_code=303)
+    target = db.get_user_by_id(user_id)
+    if not target:
+        return RedirectResponse("/admin/users", status_code=303)
+    new_pw = db.generate_password()
+    db.set_password(user_id, new_pw)
+    from urllib.parse import quote
+    return RedirectResponse(f"/admin/users?new_pw={quote(new_pw)}&for_user={quote(target['name'])}", status_code=303)
 
 
 @dashboard_router.get("/password", response_class=HTMLResponse)

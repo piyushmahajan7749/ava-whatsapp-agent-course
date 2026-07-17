@@ -60,6 +60,14 @@ def to_ist_label(utc_iso: str | None) -> str:
 # Passwords (stdlib pbkdf2 — no extra deps)
 # ---------------------------------------------------------------------------
 
+_PW_ALPHABET = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+def generate_password(length: int = 10) -> str:
+    """Random password (unambiguous alphabet, no lookalike chars)."""
+    return "".join(secrets.choice(_PW_ALPHABET) for _ in range(length))
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 200_000)
