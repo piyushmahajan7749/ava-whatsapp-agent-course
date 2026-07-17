@@ -17,7 +17,7 @@ from ai_companion.interfaces.dashboard.auth import (
     create_session_token,
     current_user,
 )
-from ai_companion.modules.angc import db, team
+from ai_companion.modules.angc import db, ics, team
 from ai_companion.modules.angc.db import IST
 
 logger = logging.getLogger(__name__)
@@ -477,6 +477,7 @@ def _page(title: str, body: str, user: dict | None = None, auth_page: bool = Fal
         nav = (
             f'<div class="nav"><a href="/dashboard">{home_label}</a>'
             f'<a href="/tasks/new" class="new-task">+ New Task</a>{team_link}'
+            f'<a href="/calendar">Calendar</a>'
             f'<a href="/password">Password</a><a href="/logout">Logout</a>'
             f'<span class="me">{_avatar(user["name"], "av")}<span>{_esc(user["name"])}</span></span></div>'
         )
@@ -1111,6 +1112,89 @@ def users_reset_password(request: Request, user_id: int):
     db.set_password(user_id, new_pw)
     from urllib.parse import quote
     return RedirectResponse(f"/admin/users?new_pw={quote(new_pw)}&for_user={quote(target['name'])}", status_code=303)
+
+
+@dashboard_router.get("/calendar", response_class=HTMLResponse)
+def calendar_page(request: Request, copied: str = ""):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+
+    token = db.get_or_create_calendar_token(user["id"])
+    feed_path = f"/calendar/{token}.ics"
+    feed_url = str(request.base_url).rstrip("/") + feed_path
+    webcal_url = feed_url.replace("https://", "webcal://").replace("http://", "webcal://")
+    scope_note = (
+        "Isme poori team ke tasks (due date wale) dikhenge."
+        if user["role"] == "admin"
+        else "Isme sirf aapke tasks (due date wale) dikhenge."
+    )
+
+    body = f"""<h1>Calendar Feed</h1>
+<div class="sub">{scope_note} Ek baar subscribe karne ke baad, naye/updated tasks apne aap dikhte rahenge — dobara add karne ki zaroorat nahi.</div>
+<div class="form-box" style="max-width:640px">
+  <label>Your private feed URL</label>
+  <div style="display:flex;gap:8px">
+    <input id="feedUrl" readonly value="{_esc(feed_url)}" style="font-family:monospace;font-size:12.5px">
+    <button type="button" class="primary" style="width:auto;padding:11px 18px;white-space:nowrap" onclick="navigator.clipboard.writeText(document.getElementById('feedUrl').value).then(()=>{{this.textContent='Copied ✓';setTimeout(()=>this.textContent='Copy',1500)}})">Copy</button>
+  </div>
+  <div class="d-actions" style="margin-top:16px">
+    <a class="act b-start" href="{_esc(webcal_url)}">📅 Add to Calendar</a>
+    <a class="act b-reopen" href="{feed_path}" target="_blank">⬇ Download .ics</a>
+  </div>
+
+  <h2 style="font-size:14.5px;margin-top:24px">How to subscribe</h2>
+  <div class="d-row" style="border:0;align-items:flex-start;flex-direction:column;gap:4px">
+    <b>Google Calendar</b>
+    <span style="color:var(--ink-2);font-size:13px">Settings → Add calendar → From URL → paste the link above → Add calendar.</span>
+  </div>
+  <div class="d-row" style="border:0;align-items:flex-start;flex-direction:column;gap:4px">
+    <b>Apple Calendar (iPhone/Mac)</b>
+    <span style="color:var(--ink-2);font-size:13px">Tap "📅 Add to Calendar" above, or Settings → Calendar → Accounts → Add Account → Other → Add Subscribed Calendar.</span>
+  </div>
+  <div class="d-row" style="border:0;align-items:flex-start;flex-direction:column;gap:4px">
+    <b>Outlook</b>
+    <span style="color:var(--ink-2);font-size:13px">Add calendar → Subscribe from web → paste the link above.</span>
+  </div>
+
+  <form method="post" action="/calendar/regenerate" style="margin-top:20px" onsubmit="return confirm('Purana link kaam karna band kar dega. Naya link generate karein?')">
+    <button class="act b-del" type="submit">🔄 Regenerate link (invalidates the old one)</button>
+  </form>
+</div>"""
+    return _page("Calendar Feed", body, user)
+
+
+@dashboard_router.post("/calendar/regenerate")
+def calendar_regenerate(request: Request):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    db.regenerate_calendar_token(user["id"])
+    return RedirectResponse("/calendar", status_code=303)
+
+
+@dashboard_router.get("/calendar/{token}.ics")
+def calendar_feed(token: str):
+    """Public (unauthenticated) — the token itself is the secret, same as a
+    Google Calendar 'secret address'. No cookies/session possible here since
+    calendar apps poll this URL directly, not through a browser session."""
+    user = db.get_user_by_calendar_token(token)
+    if not user:
+        return Response(content="Not found", status_code=404)
+
+    if user["role"] == "admin":
+        tasks = db.list_tasks(limit=1000)
+        cal_name = "ANGC Group — Team Tasks"
+    else:
+        tasks = db.list_tasks(assignee_id=user["id"], limit=1000)
+        cal_name = f"ANGC Tasks — {user['name']}"
+
+    content = ics.build_ics(tasks, cal_name)
+    return Response(
+        content=content,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": 'inline; filename="angc-tasks.ics"'},
+    )
 
 
 @dashboard_router.get("/password", response_class=HTMLResponse)

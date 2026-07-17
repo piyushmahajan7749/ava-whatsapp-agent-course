@@ -291,3 +291,99 @@ def test_dashboard_new_task_and_notes_and_overdue():
         assert r4.status_code == 200
         assigned = next(t for t in db.list_tasks(assignee_id=ramu["id"]) if t["title"] == "Admin assigned")
         assert assigned["assignee_name"] == "Ramu" and assigned["assigned_by"] == "NG Sir"
+
+
+# ---------------------------------------------------------------------------
+# calendar feed
+# ---------------------------------------------------------------------------
+
+def test_calendar_token_lifecycle():
+    sandhya = db.get_user_by_name("Sandhya")
+    token1 = db.get_or_create_calendar_token(sandhya["id"])
+    token1_again = db.get_or_create_calendar_token(sandhya["id"])
+    assert token1 == token1_again  # stable once created
+
+    assert db.get_user_by_calendar_token(token1)["name"] == "Sandhya"
+    assert db.get_user_by_calendar_token("bogus-token") is None
+
+    token2 = db.regenerate_calendar_token(sandhya["id"])
+    assert token2 != token1
+    assert db.get_user_by_calendar_token(token1) is None  # old one dead
+    assert db.get_user_by_calendar_token(token2)["name"] == "Sandhya"
+
+
+def test_ics_build_basic_and_escaping():
+    from ai_companion.modules.angc import ics
+
+    tasks = [
+        {
+            "id": 1, "title": "Call, Ayush; re: payment\nfollow-up", "assignee_name": "Sandhya",
+            "assigned_by": "NG Sir", "category": "Client Management", "status": "pending",
+            "due_date": "2026-07-20", "message": "Details with a comma, and a backslash \\ here",
+        },
+        {
+            "id": 2, "title": "No due date task", "assignee_name": "Ramu", "assigned_by": "NG Sir",
+            "category": "Expenses", "status": "done", "due_date": None, "message": "skip me",
+        },
+    ]
+    out = ics.build_ics(tasks, "Test Calendar")
+    assert out.startswith("BEGIN:VCALENDAR\r\n")
+    assert out.rstrip().endswith("END:VCALENDAR")
+    assert "BEGIN:VEVENT" in out and out.count("BEGIN:VEVENT") == 1  # undated task skipped
+    assert "UID:task-1@" in out
+    assert "DTSTART;VALUE=DATE:20260720" in out
+    assert "Call\\, Ayush\\; re: payment\\nfollow-up" in out
+    assert "a comma\\, and a backslash \\\\ here" in out
+    assert "X-WR-CALNAME:Test Calendar" in out
+
+
+def test_ics_overdue_marker():
+    from ai_companion.modules.angc import ics
+
+    tasks = [{
+        "id": 5, "title": "Overdue thing", "assignee_name": "Ramu", "assigned_by": "NG Sir",
+        "category": "Expenses", "status": "pending", "due_date": "2000-01-01", "message": "",
+    }]
+    out = ics.build_ics(tasks, "Test")
+    assert "⚠️" in out
+
+
+def test_dashboard_calendar_feed_scoping_and_auth():
+    from fastapi.testclient import TestClient
+    from ai_companion.interfaces.whatsapp.webhook_endpoint import app
+
+    with_due = db.create_task("Sandhya", "Client Management", "Sandhya dated task", "raw", due_date="2026-08-01")
+    db.create_task("Ramu", "Expenses", "Ramu dated task", "raw", due_date="2026-08-02")
+
+    with TestClient(app) as c:
+        # must be logged in to see the settings page
+        assert c.get("/calendar", follow_redirects=False).status_code in (303, 307)
+
+        c.post("/login", data={"email": "cspangcgroup@gmail.com", "password": settings.ANGC_DEFAULT_PASSWORD})
+        page = c.get("/calendar").text
+        assert "Calendar Feed" in page and ".ics" in page and "sirf aapke tasks" in page
+
+        sandhya = db.get_user_by_name("Sandhya")
+        token = db.get_or_create_calendar_token(sandhya["id"])
+
+        # feed itself needs NO auth/cookies (calendar apps can't send session cookies)
+        anon = TestClient(app)
+        feed = anon.get(f"/calendar/{token}.ics")
+        assert feed.status_code == 200
+        assert feed.headers["content-type"].startswith("text/calendar")
+        assert "Sandhya dated task" in feed.text
+        assert "Ramu dated task" not in feed.text  # employee feed = own tasks only
+
+        # bad token -> 404
+        assert anon.get("/calendar/not-a-real-token.ics").status_code == 404
+
+        # regenerate invalidates the old link
+        c.post("/calendar/regenerate")
+        assert anon.get(f"/calendar/{token}.ics").status_code == 404
+
+    with TestClient(app) as a:
+        a.post("/login", data={"email": settings.ANGC_ADMIN_EMAIL, "password": settings.ANGC_DEFAULT_PASSWORD})
+        admin = db.get_user_by_email(settings.ANGC_ADMIN_EMAIL)
+        admin_token = db.get_or_create_calendar_token(admin["id"])
+        admin_feed = TestClient(app).get(f"/calendar/{admin_token}.ics")
+        assert "Sandhya dated task" in admin_feed.text and "Ramu dated task" in admin_feed.text

@@ -125,7 +125,18 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_notes_task ON task_notes(task_id);
             """
         )
+        _migrate_calendar_token(conn)
         _seed_users(conn)
+
+
+def _migrate_calendar_token(conn: sqlite3.Connection) -> None:
+    """Add users.calendar_token if missing (older DBs created before the
+    calendar-feed feature). CREATE TABLE IF NOT EXISTS above won't add columns
+    to an already-existing table, so this runs an explicit ALTER once."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    if "calendar_token" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN calendar_token TEXT")
+        logger.info("[angc.db] migrated: added users.calendar_token")
 
 
 def _seed_users(conn: sqlite3.Connection) -> None:
@@ -210,6 +221,37 @@ def check_login(email: str, password: str) -> dict | None:
     if user and verify_password(password, user["password_hash"]):
         return user
     return None
+
+
+# ---------------------------------------------------------------------------
+# Calendar feed tokens
+# ---------------------------------------------------------------------------
+
+def get_or_create_calendar_token(user_id: int) -> str:
+    """Lazily assign a private token for this user's .ics feed URL."""
+    user = get_user_by_id(user_id)
+    if user and user.get("calendar_token"):
+        return user["calendar_token"]
+    token = secrets.token_urlsafe(24)
+    with _connect() as conn:
+        conn.execute("UPDATE users SET calendar_token=? WHERE id=?", (token, user_id))
+    return token
+
+
+def regenerate_calendar_token(user_id: int) -> str:
+    """Invalidate the old feed URL (e.g. if it leaked) and issue a new one."""
+    token = secrets.token_urlsafe(24)
+    with _connect() as conn:
+        conn.execute("UPDATE users SET calendar_token=? WHERE id=?", (token, user_id))
+    return token
+
+
+def get_user_by_calendar_token(token: str) -> dict | None:
+    if not token:
+        return None
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM users WHERE calendar_token=?", (token,)).fetchone()
+        return dict(row) if row else None
 
 
 # ---------------------------------------------------------------------------
