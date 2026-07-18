@@ -477,6 +477,31 @@ def claim_job(run_key: str) -> bool:
         return False
 
 
+def tasks_in_date_range(start: str, end: str, assignee_id: int | None = None) -> list[dict]:
+    """Tasks with a due_date in [start, end] (inclusive, 'YYYY-MM-DD'), for the
+    calendar month view. Scoped to one assignee when given."""
+    q = (
+        f"SELECT t.*, u.name AS assignee_name, u.full_name AS assignee_full_name, {_NOTE_COUNT_SQL}"
+        " FROM tasks t JOIN users u ON u.id = t.assignee_id"
+        " WHERE t.due_date IS NOT NULL AND t.due_date != '' AND t.due_date >= ? AND t.due_date <= ?"
+    )
+    params: list = [start, end]
+    if assignee_id is not None:
+        q += " AND t.assignee_id = ?"
+        params.append(assignee_id)
+    q += " ORDER BY t.due_date ASC, t.priority DESC, t.id ASC"
+    with _connect() as conn:
+        return [dict(r) for r in conn.execute(q, params).fetchall()]
+
+
+def upcoming_tasks(days: int = 14, assignee_id: int | None = None) -> list[dict]:
+    """Open tasks due from today through the next `days` days."""
+    today = datetime.now(IST).date()
+    end = today + timedelta(days=days)
+    rows = tasks_in_date_range(today.isoformat(), end.isoformat(), assignee_id)
+    return [r for r in rows if r["status"] != "done"]
+
+
 def open_tasks_with_due() -> list[dict]:
     """All not-done tasks that have a due date (for reminder/escalation sweeps)."""
     with _connect() as conn:

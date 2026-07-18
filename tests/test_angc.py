@@ -608,6 +608,93 @@ def test_recurring_dashboard_crud(monkeypatch):
         assert e.get("/admin/recurring", follow_redirects=False).status_code in (303, 307)
 
 
+def test_tasks_in_date_range_and_upcoming():
+    from datetime import datetime, timedelta
+    from ai_companion.modules.angc.db import IST
+
+    today = datetime.now(IST).date()
+    soon = (today + timedelta(days=3)).isoformat()
+    far = (today + timedelta(days=90)).isoformat()
+
+    db.create_task("Sandhya", "Client Management", "Due soon", "m", due_date=soon)
+    db.create_task("Ramu", "Expenses", "Due far", "m", due_date=far)
+    db.create_task("Sandhya", "Expenses", "No due date", "m")  # excluded everywhere
+
+    in_range = db.tasks_in_date_range(today.isoformat(), (today + timedelta(days=7)).isoformat())
+    titles = [t["title"] for t in in_range]
+    assert "Due soon" in titles and "Due far" not in titles and "No due date" not in titles
+
+    # scoping to one assignee
+    ramu = db.get_user_by_name("Ramu")
+    scoped = db.tasks_in_date_range(today.isoformat(), far, ramu["id"])
+    assert [t["title"] for t in scoped] == ["Due far"]
+
+    up = db.upcoming_tasks(14)
+    assert "Due soon" in [t["title"] for t in up] and "Due far" not in [t["title"] for t in up]
+
+    # completed tasks drop out of "upcoming"
+    t = next(x for x in in_range if x["title"] == "Due soon")
+    db.update_task_status(t["id"], "done")
+    assert "Due soon" not in [x["title"] for x in db.upcoming_tasks(14)]
+
+
+def test_calendar_month_view():
+    from fastapi.testclient import TestClient
+    from ai_companion.interfaces.whatsapp.webhook_endpoint import app
+    from datetime import datetime
+    from ai_companion.modules.angc.db import IST
+
+    today = datetime.now(IST).date()
+    this_month = today.strftime("%Y-%m")
+    db.create_task("Sandhya", "Meeting Reminder", "Board meeting", "m", due_date=today.isoformat())
+    db.create_task("Ramu", "Expenses", "Ramu only item", "m", due_date=today.isoformat())
+
+    with TestClient(app) as a:
+        a.post("/login", data={"email": settings.ANGC_ADMIN_EMAIL, "password": settings.ANGC_DEFAULT_PASSWORD})
+        page = a.get(f"/calendar?month={this_month}").text
+        # admin sees the whole team's items on the grid
+        assert "Board meeting" in page and "Ramu only item" in page
+        assert "Showing the whole team" in page
+        assert today.strftime("%B %Y") in page  # month heading
+        assert "cal-cell today" in page          # today highlighted
+
+        # month navigation works; the GRID is scoped to that month.
+        # (The "Next 14 days" panel below is deliberately global, so only
+        # assert against the grid portion of the page.)
+        other = a.get("/calendar?month=2020-01").text
+        assert "January 2020" in other
+        other_grid = other.split("Next 14 days")[0]
+        assert "Board meeting" not in other_grid
+
+        # a malformed month falls back to the current month instead of erroring
+        bad = a.get("/calendar?month=not-a-month")
+        assert bad.status_code == 200 and today.strftime("%B %Y") in bad.text
+
+    with TestClient(app) as e:
+        e.post("/login", data={"email": "cspangcgroup@gmail.com", "password": settings.ANGC_DEFAULT_PASSWORD})
+        page = e.get(f"/calendar?month={this_month}").text
+        # employee sees only their own item
+        assert "Board meeting" in page and "Ramu only item" not in page
+
+
+def test_dashboard_is_in_english():
+    """The dashboard UI is English (the WhatsApp bot stays Hinglish)."""
+    from fastapi.testclient import TestClient
+    from ai_companion.interfaces.whatsapp.webhook_endpoint import app
+
+    hinglish_markers = ["Namaste", "nahi hai", "kar sakte", "zaroori", "galat hai",
+                        "bhejiye", "kariye", "dikhenge", "badal diya"]
+    with TestClient(app) as c:
+        pages = [c.get("/login").text]
+        c.post("/login", data={"email": settings.ANGC_ADMIN_EMAIL, "password": settings.ANGC_DEFAULT_PASSWORD})
+        for path in ["/dashboard", "/tasks/new", "/calendar", "/admin/users",
+                     "/admin/recurring", "/admin/analytics", "/password"]:
+            pages.append(c.get(path).text)
+    for page in pages:
+        for marker in hinglish_markers:
+            assert marker not in page, f"Hinglish leaked into dashboard: {marker}"
+
+
 def test_calendar_feed_url_uses_https_behind_proxy(monkeypatch):
     """Azure Container Apps terminates TLS and proxies over http — the feed URL
     we show must still be https:// or calendar apps refuse to subscribe."""
@@ -641,7 +728,9 @@ def test_dashboard_calendar_feed_scoping_and_auth():
 
         c.post("/login", data={"email": "cspangcgroup@gmail.com", "password": settings.ANGC_DEFAULT_PASSWORD})
         page = c.get("/calendar").text
-        assert "Calendar Feed" in page and ".ics" in page and "sirf aapke tasks" in page
+        assert ".ics" in page and "Showing your dated tasks." in page
+        # month grid renders with weekday headers and the subscribe section
+        assert "cal-grid" in page and "Mon" in page and "Subscribe in your own calendar app" in page
 
         sandhya = db.get_user_by_name("Sandhya")
         token = db.get_or_create_calendar_token(sandhya["id"])

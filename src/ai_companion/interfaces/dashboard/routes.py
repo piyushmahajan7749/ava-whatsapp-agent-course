@@ -7,7 +7,7 @@
 import html
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -92,7 +92,7 @@ a { color: var(--navy-700); text-decoration: none; }
 }
 .brand .t1 { font-weight: 800; font-size: 16.5px; letter-spacing: .02em; }
 .brand .t2 { font-size: 11.5px; color: #9fb0d0; letter-spacing: .14em; text-transform: uppercase; margin-top: 1px; }
-.nav { display: flex; align-items: center; gap: 4px; }
+.nav { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .nav a {
   color: #c6d2e8; font-size: 13.5px; font-weight: 600;
   padding: 7px 12px; border-radius: 8px; transition: background .15s, color .15s;
@@ -341,6 +341,39 @@ table.analytics .av { width: 22px; height: 22px; font-size: 9.5px; vertical-alig
 .tb-created { background: var(--gold); } .tb-done { background: #22c55e; }
 .tlabel { font-size: 10px; color: var(--ink-3); margin-top: 6px; font-weight: 600; }
 
+/* ---- calendar month view ---- */
+.cal-wrap { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; box-shadow: var(--shadow-sm); }
+.cal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.cal-head h2 { font-size: 17px; font-weight: 800; }
+.cal-head h2::after { content: none; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-dow { font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); text-align: center; padding: 4px 0 6px; }
+.cal-cell { min-height: 108px; background: var(--bg); border-radius: 9px; padding: 6px; display: flex; flex-direction: column; gap: 3px; overflow: hidden; }
+.cal-cell.out { opacity: .45; }
+.cal-cell.today { outline: 2px solid var(--gold); background: #fffaf0; }
+.cal-num { font-size: 11.5px; font-weight: 800; color: var(--ink-2); }
+.cal-cell.today .cal-num { color: var(--gold-dark); }
+.cal-ev {
+  display: flex; align-items: flex-start; gap: 4px; background: var(--surface); border-radius: 6px;
+  padding: 3px 5px; font-size: 11px; font-weight: 600; color: var(--ink); line-height: 1.3;
+  border: 1px solid var(--line); overflow: hidden;
+  /* Wrap to at most 2 lines so titles stay readable instead of being cut mid-word. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.cal-ev .cal-dot { margin-top: 4px; }
+.cal-ev:hover { box-shadow: var(--shadow-sm); }
+.cal-ev.done { opacity: .55; text-decoration: line-through; }
+.cal-ev.overdue { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+.cal-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.cal-more { font-size: 10.5px; color: var(--ink-3); font-weight: 700; padding-left: 4px; }
+.cal-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 14px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.cal-legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
+@media (max-width: 700px) {
+  .cal-cell { min-height: 68px; padding: 4px; }
+  .cal-ev { font-size: 9.5px; padding: 2px 4px; }
+  .cal-num { font-size: 10.5px; }
+}
+
 /* ---- task detail ---- */
 .detail {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
@@ -383,6 +416,11 @@ table.analytics .av { width: 22px; height: 22px; font-size: 9.5px; vertical-alig
 @media (max-width: 560px) {
   .nav .me span { display: none; }
   .task .btns button.act { flex: 1; }
+  /* Keep the (now longer) nav to a compact couple of rows on phones. */
+  .topbar { padding: 10px 12px; }
+  .nav { gap: 2px; }
+  .nav a { padding: 6px 8px; font-size: 12.5px; }
+  .nav .me { margin-left: 4px; padding: 4px 6px; }
 }
 """
 
@@ -605,7 +643,7 @@ def root(request: Request):
 def login_page(request: Request, error: str = ""):
     if current_user(request):
         return RedirectResponse("/dashboard")
-    error_html = '<div class="error">Email ya password galat hai.</div>' if error else ""
+    error_html = '<div class="error">Incorrect email or password.</div>' if error else ""
     body = f"""<div class="login-box">
   <div class="mark">A</div>
   <h1>Welcome back</h1>
@@ -654,9 +692,9 @@ def dashboard(request: Request, status: str = ""):
 
     tasks = db.list_tasks(assignee_id=user["id"])
     open_n = sum(1 for t in tasks if t["status"] != "done")
-    board = _kanban(tasks) if tasks else _empty("Koi task nahi hai — sab clear! 🎉", "✨")
-    body = f"""<h1>Namaste, {_esc(user['name'])} ji 🙏</h1>
-<div class="sub">NG Sir dwara assigned — {open_n} open task{'s' if open_n != 1 else ''} · cards ko drag karke lane badal sakte hain</div>
+    board = _kanban(tasks) if tasks else _empty("No tasks — all clear! 🎉", "✨")
+    body = f"""<h1>Welcome, {_esc(user['name'])}</h1>
+<div class="sub">Assigned by NG Sir — {open_n} open task{'s' if open_n != 1 else ''} · drag cards between lanes to update status</div>
 {board}"""
     return _page("My Tasks", body, user, script=_BOARD_JS)
 
@@ -697,11 +735,11 @@ def _admin_dashboard(user: dict) -> HTMLResponse:
     board = (
         _kanban(all_tasks, show_assignee=True, can_delete=True)
         if all_tasks
-        else _empty("Abhi koi task nahi. WhatsApp par task bhejiye 📲")
+        else _empty("No tasks yet. Send a task on WhatsApp 📲")
     )
 
-    body = f"""<h1>Namaste, Nikhil Gupta Sir 🙏</h1>
-<div class="sub">ANGC team task overview · cards ko drag karke lane badal sakte hain</div>
+    body = f"""<h1>Welcome, Nikhil Gupta Sir</h1>
+<div class="sub">ANGC team task overview · drag cards between lanes to update status</div>
 <div class="kpis">{kpis}</div>
 <div class="cards">{emp_cards}</div>
 <h2>Task board</h2>
@@ -823,7 +861,7 @@ def recurring_page(request: Request, ok: str = "", error: str = ""):
 </tr>"""
     table = (
         f'<div style="overflow-x:auto"><table class="users"><tr><th>Task</th><th>Repeats</th><th>Assignee</th><th>Status</th><th>Last run</th><th></th></tr>{rows}</table></div>'
-        if rows else _empty("Koi recurring task nahi hai. Neeche add kariye 👇", "🔁")
+        if rows else _empty("No recurring tasks yet. Add one below 👇", "🔁")
     )
 
     cat_options = "".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in team.CATEGORIES)
@@ -835,10 +873,10 @@ def recurring_page(request: Request, ok: str = "", error: str = ""):
     if ok:
         note = '<div class="ok">Recurring task set ho gaya ✅</div>'
     elif error:
-        note = '<div class="error">Title zaroori hai.</div>'
+        note = '<div class="error">Title is required.</div>'
 
     body = f"""<h1>Recurring Tasks</h1>
-<div class="sub">Auto-create hone wale tasks · <a class="backlink" href="/dashboard">← back to board</a></div>
+<div class="sub">Tasks that are created automatically · <a class="backlink" href="/dashboard">← back to board</a></div>
 {table}
 <h2>Add recurring task</h2>
 <div class="form-box">
@@ -920,10 +958,10 @@ def employee_tasks(request: Request, employee_id: int, status: str = ""):
 
     employee = db.get_user_by_id(employee_id)
     if not employee or employee["role"] == "admin":
-        return _page("Not found", _empty("Employee nahi mila."), user)
+        return _page("Not found", _empty("Employee not found."), user)
 
     tasks = db.list_tasks(assignee_id=employee_id)
-    board = _kanban(tasks, can_delete=True) if tasks else _empty("Koi task nahi hai.")
+    board = _kanban(tasks, can_delete=True) if tasks else _empty("No tasks.")
     body = f"""<div class="person-head">{_avatar(employee['name'])}
   <div><h1>{_esc(employee['name'])} <span style="color:var(--ink-3);font-weight:600">— {_esc(employee['full_name'])}</span></h1>
   <div class="sub" style="margin:0">{_esc(employee['email'])} · {_esc(employee['phone'])}</div></div>
@@ -985,7 +1023,7 @@ def new_task_page(request: Request, error: str = ""):
         assignee_field = f"<label>Assign to</label><select name=\"assignee_id\">{opts}</select>"
     else:
         assignee_field = f"<div class='d-row' style='border:0'><span>👤 Assigned to</span><b>{_avatar(user['name'], 'av')} {_esc(user['name'])} (you)</b></div>"
-    error_html = '<div class="error">Title zaroori hai.</div>' if error else ""
+    error_html = '<div class="error">Title is required.</div>' if error else ""
 
     body = f"""<h1>New Task</h1>
 <div class="sub"><a class="backlink" href="/dashboard">← Back</a></div>
@@ -1083,7 +1121,7 @@ def task_detail(request: Request, task_id: int):
     )
 
     notes = db.list_notes(task["id"])
-    notes_html = "".join(_note_item(n, user) for n in notes) or '<div class="empty" style="padding:20px">Abhi koi note nahi hai.</div>'
+    notes_html = "".join(_note_item(n, user) for n in notes) or '<div class="empty" style="padding:20px">No notes yet.</div>'
 
     body = f"""<div class="sub" style="margin-bottom:10px"><a class="backlink" href="/dashboard">← Back to board</a></div>
 <div class="detail">
@@ -1197,7 +1235,7 @@ def edit_task_page(request: Request, task_id: int, error: str = ""):
         f'<option value="normal"{"" if is_urgent else " selected"}>Normal</option>'
         f'<option value="urgent"{" selected" if is_urgent else ""}>🔴 Urgent</option>'
     )
-    error_html = '<div class="error">Title khaali nahi ho sakta.</div>' if error else ""
+    error_html = '<div class="error">Title cannot be empty.</div>' if error else ""
 
     body = f"""<h1>Edit Task #{task['id']}</h1>
 <div class="sub"><a class="backlink" href="/dashboard">← Back</a></div>
@@ -1295,12 +1333,12 @@ def users_page(request: Request, ok: str = "", error: str = "", new_pw: str = ""
     elif ok:
         note = '<div class="ok">Employee added ✅ Share their login + password with them directly.</div>'
     elif error == "dup":
-        note = '<div class="error">Is email se user pehle se hai.</div>'
+        note = '<div class="error">A user with this email already exists.</div>'
     elif error:
-        note = '<div class="error">Name, email aur password (min 6) zaroori hain.</div>'
+        note = '<div class="error">Name, email and password (min 6 characters) are required.</div>'
 
     body = f"""<h1>Team</h1>
-<div class="sub">Dashboard users — employees apne hi tasks dekh aur edit kar sakte hain</div>
+<div class="sub">Dashboard users — employees can view and edit only their own tasks</div>
 {note if new_pw or ok else ""}
 <table class="users">
   <tr><th></th><th>Name</th><th>Email</th><th>WhatsApp</th><th>Role</th><th></th></tr>
@@ -1385,24 +1423,129 @@ def _external_base_url(request: Request) -> str:
 
 
 @dashboard_router.get("/calendar", response_class=HTMLResponse)
-def calendar_page(request: Request, copied: str = ""):
+def calendar_page(request: Request, month: str = "", copied: str = ""):
+    """Month grid of everything due, plus the subscribe-feed setup."""
+    import calendar as _cal
+
     user = current_user(request)
     if not user:
         return RedirectResponse("/login")
+
+    today = datetime.now(IST).date()
+    try:
+        year, mon = (int(x) for x in month.split("-"))
+        datetime(year, mon, 1)
+    except (ValueError, AttributeError):
+        year, mon = today.year, today.month
+
+    first = date(year, mon, 1)
+    last_dom = _cal.monthrange(year, mon)[1]
+    last = date(year, mon, last_dom)
+    prev_m = (first - timedelta(days=1)).strftime("%Y-%m")
+    next_m = (last + timedelta(days=1)).strftime("%Y-%m")
+
+    # Admin sees the whole team; an employee sees only their own.
+    scope_id = None if user["role"] == "admin" else user["id"]
+    tasks = db.tasks_in_date_range(first.isoformat(), last.isoformat(), scope_id)
+
+    by_day: dict[str, list[dict]] = {}
+    for t in tasks:
+        by_day.setdefault(t["due_date"], []).append(t)
+
+    # Grid starts on the Monday on/before the 1st and runs whole weeks.
+    grid_start = first - timedelta(days=first.weekday())
+    grid_end = last + timedelta(days=(6 - last.weekday()))
+
+    cells = ""
+    day = grid_start
+    while day <= grid_end:
+        iso = day.isoformat()
+        classes = ["cal-cell"]
+        if day.month != mon:
+            classes.append("out")
+        if day == today:
+            classes.append("today")
+        items = ""
+        for t in by_day.get(iso, [])[:4]:
+            done = t["status"] == "done"
+            overdue = (not done) and iso < today.isoformat()
+            urgent = t.get("priority") == "urgent" and not done
+            dot = STATUS_ACCENT.get(t["status"], "#94a3b8")
+            cls = "cal-ev" + (" done" if done else "") + (" overdue" if overdue else "")
+            who = f" · {_esc(t['assignee_name'])}" if user["role"] == "admin" else ""
+            label = ("🔴 " if urgent else "") + _esc(t["title"])
+            items += (
+                f'<a class="{cls}" href="/tasks/{t["id"]}" title="#{t["id"]} {_esc(t["title"])}{who}">'
+                f'<span class="cal-dot" style="background:{dot}"></span>{label}</a>'
+            )
+        more = len(by_day.get(iso, [])) - 4
+        if more > 0:
+            items += f'<span class="cal-more">+{more} more</span>'
+        cells += (
+            f'<div class="{" ".join(classes)}"><div class="cal-num">{day.day}</div>{items}</div>'
+        )
+        day += timedelta(days=1)
+
+    dow_head = "".join(f'<div class="cal-dow">{d}</div>' for d in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
+
+    # Upcoming list (next 14 days, open only).
+    upcoming = db.upcoming_tasks(14, scope_id)
+    up_rows = ""
+    for t in upcoming[:12]:
+        d = datetime.strptime(t["due_date"], "%Y-%m-%d").date()
+        when = "Today" if d == today else ("Tomorrow" if d == today + timedelta(days=1) else d.strftime("%a, %d %b"))
+        urgent = '<span class="chip prio-urgent">🔴 Urgent</span>' if t.get("priority") == "urgent" else ""
+        who = f'{_avatar(t["assignee_name"], "av")} {_esc(t["assignee_name"])}' if user["role"] == "admin" else ""
+        up_rows += (
+            f'<tr><td style="white-space:nowrap"><b>{when}</b></td>'
+            f'<td><a href="/tasks/{t["id"]}">#{t["id"]} {_esc(t["title"])}</a> {urgent}</td>'
+            f'<td><span class="chip tag">{_esc(t["category"])}</span></td>'
+            f'<td>{who}</td>'
+            f'<td>{_status_chip_lg(t["status"])}</td></tr>'
+        )
+    upcoming_html = (
+        f'<div style="overflow-x:auto"><table class="users">'
+        f'<tr><th>When</th><th>Task</th><th>Category</th><th>Owner</th><th>Status</th></tr>{up_rows}</table></div>'
+        if up_rows else _empty("Nothing due in the next 14 days.", "🗓️")
+    )
 
     token = db.get_or_create_calendar_token(user["id"])
     feed_path = f"/calendar/{token}.ics"
     feed_url = _external_base_url(request) + feed_path
     webcal_url = feed_url.replace("https://", "webcal://").replace("http://", "webcal://")
     scope_note = (
-        "Isme poori team ke tasks (due date wale) dikhenge."
-        if user["role"] == "admin"
-        else "Isme sirf aapke tasks (due date wale) dikhenge."
+        "Showing the whole team's dated tasks."
+        if user["role"] == "admin" else "Showing your dated tasks."
     )
 
-    body = f"""<h1>Calendar Feed</h1>
-<div class="sub">{scope_note} Ek baar subscribe karne ke baad, naye/updated tasks apne aap dikhte rahenge — dobara add karne ki zaroorat nahi.</div>
+    body = f"""<h1>Calendar</h1>
+<div class="sub">{scope_note} Only tasks with a due date appear here.</div>
+
+<div class="cal-wrap">
+  <div class="cal-head">
+    <a class="act b-reopen" href="/calendar?month={prev_m}">← Prev</a>
+    <h2 style="margin:0">{first.strftime('%B %Y')}</h2>
+    <div style="display:flex;gap:8px">
+      <a class="act b-reopen" href="/calendar">Today</a>
+      <a class="act b-reopen" href="/calendar?month={next_m}">Next →</a>
+    </div>
+  </div>
+  <div class="cal-grid">{dow_head}{cells}</div>
+  <div class="cal-legend">
+    <span><i class="sw" style="background:#f59e0b"></i> To Do</span>
+    <span><i class="sw" style="background:#3b82f6"></i> In Progress</span>
+    <span><i class="sw" style="background:#8b5cf6"></i> In Review</span>
+    <span><i class="sw" style="background:#22c55e"></i> Done</span>
+    <span><i class="sw" style="background:#dc2626"></i> Overdue</span>
+  </div>
+</div>
+
+<h2>Next 14 days</h2>
+{upcoming_html}
+
+<h2>Subscribe in your own calendar app</h2>
 <div class="form-box" style="max-width:640px">
+  <div class="sub" style="margin-top:0">Subscribe once and new or updated tasks keep syncing automatically — no need to add them again.</div>
   <label>Your private feed URL</label>
   <div style="display:flex;gap:8px">
     <input id="feedUrl" readonly value="{_esc(feed_url)}" style="font-family:monospace;font-size:12.5px">
@@ -1427,11 +1570,11 @@ def calendar_page(request: Request, copied: str = ""):
     <span style="color:var(--ink-2);font-size:13px">Add calendar → Subscribe from web → paste the link above.</span>
   </div>
 
-  <form method="post" action="/calendar/regenerate" style="margin-top:20px" onsubmit="return confirm('Purana link kaam karna band kar dega. Naya link generate karein?')">
+  <form method="post" action="/calendar/regenerate" style="margin-top:20px" onsubmit="return confirm('The old link will stop working. Generate a new one?')">
     <button class="act b-del" type="submit">🔄 Regenerate link (invalidates the old one)</button>
   </form>
 </div>"""
-    return _page("Calendar Feed", body, user)
+    return _page("Calendar", body, user)
 
 
 @dashboard_router.post("/calendar/regenerate")
@@ -1474,9 +1617,9 @@ def password_page(request: Request, ok: str = "", error: str = ""):
         return RedirectResponse("/login")
     note = ""
     if ok:
-        note = '<div class="ok">Password badal diya gaya ✅</div>'
+        note = '<div class="ok">Password updated ✅</div>'
     elif error:
-        note = '<div class="error">Current password galat hai ya naya password 6 akshar se chhota hai.</div>'
+        note = '<div class="error">Current password is incorrect, or the new password is shorter than 6 characters.</div>'
     body = f"""<div class="login-box">
   <div class="mark">A</div>
   <h1>Change Password</h1>
