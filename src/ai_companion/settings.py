@@ -13,24 +13,32 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8"
     )
 
-    # Groq is used for voice-note transcription; the rest are legacy saarthi
-    # integrations kept optional so the ANGC branch can boot without them.
+    # Groq powers both voice-note transcription and (by default) the task
+    # parsing LLM. Everything else is optional so the branch boots anywhere.
     GROQ_API_KEY: str = ""
     ELEVENLABS_API_KEY: str = ""
     ELEVENLABS_VOICE_ID: str = ""
     TOGETHER_API_KEY: str = ""
-    AZURE_OPENAI_API_KEY: str
-    AZURE_OPENAI_API_ENDPOINT: str
-    AZURE_OPENAI_API_VERSION: str
-    AZURE_OPENAI_VISION_DEPLOYMENT: str
+    # Azure OpenAI is now optional (only used when LLM_PROVIDER=azure).
+    AZURE_OPENAI_API_KEY: str = ""
+    AZURE_OPENAI_API_ENDPOINT: str = ""
+    AZURE_OPENAI_API_VERSION: str = ""
+    AZURE_OPENAI_VISION_DEPLOYMENT: str = ""
+
+    # LLM provider for task parsing: "groq" (free, default) | "azure" | "openai" | "gemini".
+    # All are OpenAI-compatible; only the client base URL + model names differ.
+    LLM_PROVIDER: str = "groq"
+    OPENAI_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
 
     QDRANT_API_KEY: str | None = None
     QDRANT_URL: str = ""
     QDRANT_PORT: str = "6333"
     QDRANT_HOST: str | None = None
 
-    TEXT_MODEL_NAME: str = "gpt-5-chat"
-    SMALL_TEXT_MODEL_NAME: str = "gpt-5-mini"# Azure OpenAI Vision deployment name
+    # Model names for the active provider (Groq defaults shown).
+    TEXT_MODEL_NAME: str = "llama-3.3-70b-versatile"
+    SMALL_TEXT_MODEL_NAME: str = "llama-3.1-8b-instant"# Azure OpenAI Vision deployment name
     STT_MODEL_NAME: str = "whisper-large-v3-turbo"
     TTS_MODEL_NAME: str = "eleven_flash_v2_5"
     TTI_MODEL_NAME: str = "black-forest-labs/FLUX.1-schnell-Free"

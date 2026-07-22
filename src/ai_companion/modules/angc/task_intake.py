@@ -19,21 +19,12 @@ import re
 from datetime import datetime
 
 import httpx
-from openai import AzureOpenAI
 
-from ai_companion.modules.angc import db, team
+from ai_companion.modules.angc import db, llm, team
 from ai_companion.modules.angc.db import IST
 from ai_companion.settings import settings
 
 logger = logging.getLogger(__name__)
-
-
-def _ai_client() -> AzureOpenAI:
-    return AzureOpenAI(
-        api_key=settings.AZURE_OPENAI_API_KEY,
-        azure_endpoint=settings.AZURE_OPENAI_API_ENDPOINT,
-        api_version=settings.AZURE_OPENAI_API_VERSION,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -90,16 +81,16 @@ def extract_task(text: str) -> dict:
         today=datetime.now(IST).strftime("%Y-%m-%d (%A)"),
     )
     try:
-        resp = _ai_client().chat.completions.create(
-            model=settings.TEXT_MODEL_NAME,
-            messages=[
+        content = llm.complete(
+            [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": text},
             ],
-            response_format={"type": "json_object"},
-            max_completion_tokens=2000,
+            model=settings.TEXT_MODEL_NAME,
+            max_tokens=2000,
+            json_mode=True,
         )
-        data = json.loads(resp.choices[0].message.content or "{}")
+        data = json.loads(content or "{}")
     except Exception as exc:
         logger.error("[angc_intake] extraction failed: %s", exc)
         data = {}
@@ -497,9 +488,8 @@ def _answer_query(question: str) -> str:
         context_lines.append("- none, sab clear hai")
 
     try:
-        resp = _ai_client().chat.completions.create(
-            model=settings.TEXT_MODEL_NAME,
-            messages=[
+        answer = llm.complete(
+            [
                 {
                     "role": "system",
                     "content": (
@@ -512,9 +502,9 @@ def _answer_query(question: str) -> str:
                 },
                 {"role": "user", "content": question},
             ],
-            max_completion_tokens=1500,
-        )
-        answer = (resp.choices[0].message.content or "").strip()
+            model=settings.TEXT_MODEL_NAME,
+            max_tokens=1500,
+        ).strip()
         if answer:
             return answer
     except Exception as exc:
@@ -529,9 +519,8 @@ def _answer_query(question: str) -> str:
 
 def _smalltalk_reply(text: str) -> str:
     try:
-        resp = _ai_client().chat.completions.create(
-            model=settings.SMALL_TEXT_MODEL_NAME,
-            messages=[
+        answer = llm.complete(
+            [
                 {
                     "role": "system",
                     "content": (
@@ -543,9 +532,9 @@ def _smalltalk_reply(text: str) -> str:
                 },
                 {"role": "user", "content": text},
             ],
-            max_completion_tokens=1000,
-        )
-        answer = (resp.choices[0].message.content or "").strip()
+            model=settings.SMALL_TEXT_MODEL_NAME,
+            max_tokens=1000,
+        ).strip()
         if answer:
             return answer
     except Exception as exc:

@@ -1,0 +1,38 @@
+# Fly.io deployment for the ANGC executive-assistant (angc-assistant branch).
+# Self-contained FastAPI app: SQLite on a persistent volume + in-process
+# scheduler, so the machine must stay ALWAYS ON (never scale to zero) or the
+# reminder/digest jobs won't fire.
+
+app = "angc-assistant"
+primary_region = "bom"  # Mumbai — closest to India / WhatsApp users
+
+[build]
+
+[env]
+  # DB lives on the mounted volume (see [mounts]); WAL is safe on a real disk
+  # (unlike the Azure Files SMB mount, where we had to disable it).
+  ANGC_DB_PATH = "/app/data/angc_tasks.db"
+  ANGC_SQLITE_WAL = "true"
+  ANGC_SCHEDULER_ENABLED = "true"
+  ANGC_ADMIN_EMAIL = "director@angcgroup.com"
+  # Task-parsing LLM: Groq (free, OpenAI-compatible) — Azure OpenAI is dead.
+  LLM_PROVIDER = "groq"
+  TEXT_MODEL_NAME = "llama-3.3-70b-versatile"
+  SMALL_TEXT_MODEL_NAME = "llama-3.1-8b-instant"
+
+# Persistent volume for the SQLite DB — survives restarts and redeploys.
+[[mounts]]
+  source = "angc_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Keep exactly one machine running at all times so the scheduler stays alive.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
