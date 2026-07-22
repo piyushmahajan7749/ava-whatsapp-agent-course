@@ -1,0 +1,12 @@
+# Lean runtime deps for the ANGC assistant — ONLY what the app imports at
+# runtime (verified: no torch/langchain/qdrant). Keeps the e2-micro install
+# small and fast. Do NOT `pip install -e .` (that pulls the full pyproject).
+fastapi>=0.115
+uvicorn[standard]>=0.34
+openai>=1.60
+httpx>=0.27
+pydantic>=2.10
+pydantic-settings>=2.7
+python-dotenv>=1.0
+python-multipart>=0.0.18
+groq>=0.15
