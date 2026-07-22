@@ -47,10 +47,12 @@ gcloud compute scp --zone "$ZONE" --recurse \
 gcloud compute scp --zone "$ZONE" "$ENV_SRC" "$VM":~/angc-upload/app.env
 
 echo "== install into /opt/angc and run setup =="
+# Code is always refreshed; app.env is only seeded on first deploy so a
+# redeploy never clobbers the operational vars setup_vm.sh appended to it.
 gcloud compute ssh "$VM" --zone "$ZONE" --command "
   sudo mkdir -p /opt/angc &&
   sudo cp -r ~/angc-upload/src ~/angc-upload/deploy ~/angc-upload/pyproject.toml ~/angc-upload/README.md /opt/angc/ &&
-  sudo cp ~/angc-upload/app.env /opt/angc/app.env &&
+  ([ -f /opt/angc/app.env ] || sudo cp ~/angc-upload/app.env /opt/angc/app.env) &&
   sudo chown -R \$(whoami) /opt/angc &&
   chmod 600 /opt/angc/app.env &&
   bash /opt/angc/deploy/gcp/setup_vm.sh

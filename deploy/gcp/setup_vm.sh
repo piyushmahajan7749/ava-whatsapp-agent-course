@@ -19,7 +19,8 @@ command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 cd "$APP_DIR"
 uv python install 3.12
-uv venv --python 3.12 .venv
+[ -d .venv ] || uv venv --python 3.12 .venv
+# Always (re)install to the pinned versions — idempotent, and picks up updates.
 uv pip install --python .venv/bin/python -r deploy/gcp/requirements-runtime.txt
 
 echo "== public hostname (<IP>.sslip.io) =="
