@@ -1,12 +1,17 @@
 # Lean runtime deps for the ANGC assistant — ONLY what the app imports at
 # runtime (verified: no torch/langchain/qdrant). Keeps the e2-micro install
 # small and fast. Do NOT `pip install -e .` (that pulls the full pyproject).
-fastapi>=0.115
-uvicorn[standard]>=0.34
-openai>=1.60
-httpx>=0.27
-pydantic>=2.10
-pydantic-settings>=2.7
-python-dotenv>=1.0
-python-multipart>=0.0.18
-groq>=0.15
+#
+# PINNED to the exact versions the app is tested against. Loose bounds let the
+# resolver pull fastapi 0.139 / starlette 1.3, whose routing internals silently
+# drop routes on include_router — so pin fastapi + starlette especially.
+fastapi==0.115.6
+starlette==0.41.3
+uvicorn[standard]==0.25.0
+openai==1.58.1
+httpx==0.27.2
+pydantic==2.10.0
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+python-multipart==0.0.9
+groq==0.13.1
